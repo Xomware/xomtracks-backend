@@ -1,0 +1,315 @@
+name: Deploy Backend
+
+# Ported from xomify-backend's deploy-backend.yml (the established,
+# production-proven mechanism -- `aws lambda update-function-code` per
+# changed handler + a shared layer for lambdas/common/). Two real
+# deviations from a verbatim copy, both because xomtracks' Terraform
+# names its Lambda functions differently than xomify's:
+#
+# 1. Function-name mapping: xomify's Terraform flattens EVERY underscore
+#    in a lambda folder name to a hyphen (verified live:
+#    lambdas/groups_add_song_url -> xomify-groups-add-song-url), so its
+#    script does `tr '_' '-'` on the whole folder name. xomtracks'
+#    Terraform (lambda.tf) instead nests each handler under a 2-level
+#    "domain-name" prefix and only replaces the FIRST underscore
+#    (verified live: lambdas/shares_match_override ->
+#    xomtracks-shares-match_override -- note the SECOND underscore, in
+#    "match_override" itself, is preserved). Splitting only on the first
+#    underscore reproduces this exactly for all 4 current handlers
+#    (auth_login, shares_ingest, shares_list, shares_match_override).
+#
+# 2. Only 4 lambda folders exist right now (auth_login, shares_ingest,
+#    shares_list, shares_match_override) -- the authorizer and 3 cron
+#    Lambdas (xomify-style `lambdas/authorizer/`, `lambdas/cron_*/`) are
+#    provisioned in Terraform but have NO Python source yet (deliberately
+#    left as stub zips per PLAN.md). Since this workflow only ever
+#    iterates over folders that actually exist under `lambdas/` (excluding
+#    `common`), those four stub-only functions are naturally never touched
+#    by any job here -- no special-casing needed, they simply don't appear
+#    in any `changed_lambdas`/`all_lambdas` list until their folders exist.
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      deploy_mode:
+        description: "What to deploy"
+        required: true
+        type: choice
+        default: "all"
+        options:
+          - all
+          - specific
+      specific_lambdas:
+        description: "Comma-separated lambda folder names (only used when deploy_mode=specific). e.g. auth_login,shares_ingest"
+        required: false
+        type: string
+        default: ""
+      deploy_common_layer:
+        description: "Also redeploy the common layer"
+        required: false
+        type: boolean
+        default: true
+
+env:
+  AWS_REGION: "us-east-1"
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      common_changed: ${{ steps.changes.outputs.common }}
+      changed_lambdas: ${{ steps.changes.outputs.changed_lambdas }}
+      all_lambdas: ${{ steps.all-lambdas.outputs.all_lambdas }}
+      has_lambda_changes: ${{ steps.changes.outputs.has_lambda_changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: changes
+        run: |
+          DEPLOY_MODE="${{ github.event.inputs.deploy_mode }}"
+          SPECIFIC_LAMBDAS="${{ github.event.inputs.specific_lambdas }}"
+          DEPLOY_COMMON="${{ github.event.inputs.deploy_common_layer }}"
+
+          if [ "$DEPLOY_MODE" == "all" ]; then
+            echo "Deploy all requested - marking everything as changed"
+            echo "common=true" >> $GITHUB_OUTPUT
+
+            ALL_LAMBDAS=$(ls -d lambdas/*/ 2>/dev/null | grep -v "lambdas/common" | xargs -n1 basename | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "changed_lambdas=$ALL_LAMBDAS" >> $GITHUB_OUTPUT
+            echo "has_lambda_changes=true" >> $GITHUB_OUTPUT
+            echo "Deploying all lambdas: $ALL_LAMBDAS"
+
+          elif [ "$DEPLOY_MODE" == "specific" ] && [ -n "$SPECIFIC_LAMBDAS" ]; then
+            echo "Deploying specific lambdas: $SPECIFIC_LAMBDAS"
+
+            if [ "$DEPLOY_COMMON" == "true" ]; then
+              echo "common=true" >> $GITHUB_OUTPUT
+            else
+              echo "common=false" >> $GITHUB_OUTPUT
+            fi
+
+            JSON_ARRAY=$(echo "$SPECIFIC_LAMBDAS" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "changed_lambdas=$JSON_ARRAY" >> $GITHUB_OUTPUT
+            echo "has_lambda_changes=true" >> $GITHUB_OUTPUT
+            echo "Selected lambdas: $JSON_ARRAY"
+
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+
+            if echo "$CHANGED_FILES" | grep -q "^lambdas/common/"; then
+              echo "common=true" >> $GITHUB_OUTPUT
+            else
+              echo "common=false" >> $GITHUB_OUTPUT
+            fi
+
+            CHANGED_LAMBDAS=$(echo "$CHANGED_FILES" | grep "^lambdas/" | grep -v "^lambdas/common/" | cut -d'/' -f2 | sort -u | grep -v '^$' || true)
+
+            if [ -n "$CHANGED_LAMBDAS" ]; then
+              JSON_ARRAY=$(echo "$CHANGED_LAMBDAS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              echo "changed_lambdas=$JSON_ARRAY" >> $GITHUB_OUTPUT
+              echo "has_lambda_changes=true" >> $GITHUB_OUTPUT
+              echo "Changed lambdas: $JSON_ARRAY"
+            else
+              echo "changed_lambdas=[]" >> $GITHUB_OUTPUT
+              echo "has_lambda_changes=false" >> $GITHUB_OUTPUT
+              echo "No lambda changes detected"
+            fi
+          fi
+
+      - name: Get all lambda folders
+        id: all-lambdas
+        run: |
+          ALL_LAMBDAS=$(ls -d lambdas/*/ 2>/dev/null | grep -v "lambdas/common" | xargs -n1 basename | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "all_lambdas=$ALL_LAMBDAS" >> $GITHUB_OUTPUT
+          echo "All lambdas: $ALL_LAMBDAS"
+
+  test-lambdas:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_lambda_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lambda: ${{ fromJson(needs.detect-changes.outputs.changed_lambdas) }}
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pytest-asyncio is required -- xomtracks' spotify.py/playlist.py/
+          # matching.py tests use `async def` tests under
+          # `asyncio_mode = auto` (see pytest.ini). xomify's own copy of
+          # this step doesn't need it (no async tests there).
+          pip install pytest pytest-cov pytest-asyncio moto boto3
+          pip install -r requirements.txt
+
+      - name: Run tests for ${{ matrix.lambda }}
+        run: |
+          if [ -f "tests/test_${{ matrix.lambda }}.py" ]; then
+            echo "Running tests for ${{ matrix.lambda }}"
+            pytest tests/test_${{ matrix.lambda }}.py -v --cov=lambdas/${{ matrix.lambda }}
+          else
+            echo "No tests found for ${{ matrix.lambda }}, skipping..."
+          fi
+
+  deploy-layer:
+    needs: [detect-changes, test-lambdas]
+    if: always() && needs.detect-changes.outputs.common_changed == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      layer_arn: ${{ steps.deploy-layer.outputs.layer_arn }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Package layer
+        run: |
+          mkdir -p python/lambdas
+          cp -r lambdas/common python/lambdas/
+          python3.12 -m pip install --platform manylinux2014_x86_64 --only-binary=:all: -t python/ -r requirements.txt
+          zip -r xomtracks-shared-packages.zip python
+
+      - name: Deploy layer
+        id: deploy-layer
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          LAYER_OUTPUT=$(aws lambda publish-layer-version \
+            --layer-name xomtracks-shared-packages \
+            --zip-file fileb://xomtracks-shared-packages.zip \
+            --compatible-runtimes python3.12 \
+            --region $AWS_REGION \
+            --output json)
+
+          LAYER_ARN=$(echo $LAYER_OUTPUT | jq -r .LayerVersionArn)
+          echo "layer_arn=$LAYER_ARN" >> $GITHUB_OUTPUT
+          echo "Published layer: $LAYER_ARN"
+
+  update-all-lambdas-layer:
+    needs: [detect-changes, deploy-layer]
+    if: always() && needs.detect-changes.outputs.common_changed == 'true' && needs.deploy-layer.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lambda: ${{ fromJson(needs.detect-changes.outputs.all_lambdas) }}
+      fail-fast: false
+    steps:
+      - name: Update lambda layer configuration
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          FOLDER="${{ matrix.lambda }}"
+          DOMAIN="${FOLDER%%_*}"
+          REST="${FOLDER#*_}"
+          if [ "$DOMAIN" == "$REST" ]; then
+            FUNCTION_NAME="xomtracks-${FOLDER}"
+          else
+            FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
+          fi
+
+          echo "Updating layer and runtime for $FUNCTION_NAME"
+          aws lambda update-function-configuration \
+            --function-name $FUNCTION_NAME \
+            --runtime python3.12 \
+            --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
+            --region $AWS_REGION || echo "Function $FUNCTION_NAME not found, skipping..."
+
+  deploy-changed-lambdas:
+    needs: [detect-changes, test-lambdas, deploy-layer]
+    if: always() && needs.detect-changes.outputs.has_lambda_changes == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lambda: ${{ fromJson(needs.detect-changes.outputs.changed_lambdas) }}
+      fail-fast: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Package lambda
+        run: |
+          cd lambdas/${{ matrix.lambda }}
+          zip -r ../../${{ matrix.lambda }}.zip *
+
+      - name: Deploy lambda code
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          FOLDER="${{ matrix.lambda }}"
+          DOMAIN="${FOLDER%%_*}"
+          REST="${FOLDER#*_}"
+          if [ "$DOMAIN" == "$REST" ]; then
+            FUNCTION_NAME="xomtracks-${FOLDER}"
+          else
+            FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
+          fi
+
+          echo "Deploying code for $FUNCTION_NAME"
+          aws lambda update-function-code \
+            --function-name $FUNCTION_NAME \
+            --zip-file fileb://${{ matrix.lambda }}.zip \
+            --region $AWS_REGION
+
+          echo "Waiting for function update to complete..."
+          aws lambda wait function-updated \
+            --function-name $FUNCTION_NAME \
+            --region $AWS_REGION
+
+          if [ "${{ needs.deploy-layer.outputs.layer_arn }}" != "" ]; then
+            echo "Updating layer configuration for $FUNCTION_NAME"
+            aws lambda update-function-configuration \
+              --function-name $FUNCTION_NAME \
+              --layers ${{ needs.deploy-layer.outputs.layer_arn }} \
+              --region $AWS_REGION
+
+            echo "Waiting for configuration update to complete..."
+            aws lambda wait function-updated \
+              --function-name $FUNCTION_NAME \
+              --region $AWS_REGION
+          fi
+
+          echo "$FUNCTION_NAME deployment complete"
+
+  summary:
+    needs: [detect-changes, deploy-layer, update-all-lambdas-layer, deploy-changed-lambdas]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deployment summary
+        run: |
+          echo "=== Deployment Summary ==="
+          echo "Common layer changed: ${{ needs.detect-changes.outputs.common_changed }}"
+          echo "Changed lambdas: ${{ needs.detect-changes.outputs.changed_lambdas }}"
+          if [ "${{ needs.deploy-layer.outputs.layer_arn }}" != "" ]; then
+            echo "New layer ARN: ${{ needs.deploy-layer.outputs.layer_arn }}"
+          fi
+          echo "=========================="

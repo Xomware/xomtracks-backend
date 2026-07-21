@@ -20,6 +20,16 @@ pip install -r requirements.txt
 ./run_tests.sh
 ```
 
+## Deploy
+`.github/workflows/deploy-backend.yml` (ported from xomify-backend's proven
+mechanism) deploys real Lambda code via `aws lambda update-function-code` on
+push to `master`, or manually via `workflow_dispatch` (`deploy_mode: all`
+for a full redeploy). Packages `lambdas/common/` + pinned deps as the
+`xomtracks-shared-packages` Lambda layer, same as xomify. Only deploys
+handler folders that actually exist under `lambdas/` — the authorizer and
+3 cron Lambdas (Terraform-provisioned, stub zips) stay untouched until
+their Python source is written.
+
 ## Project Config
 ```yaml
 pm_tool: github-projects
