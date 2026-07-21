@@ -1,0 +1,20 @@
+# Python 3.12
+# Note: boto3 is provided by the Lambda runtime and intentionally omitted
+# here (matches xomify-backend convention) -- installed separately for
+# local dev/test via run_tests.sh.
+#
+# cffi/cryptography/jwcrypto intentionally NOT pinned yet (matches
+# xomforms-backend's Phase-1 decision): auth_login mints an HS256 JWT via
+# PyJWT, which needs no cryptography backend for HS256. Those deps are only
+# needed if/when a Cognito-JWKS-verifying (RS256) authorizer is built --
+# deferred, not part of this phase's scope.
+aiohttp==3.12.15
+async_timeout==5.0.1
+annotated-types==0.7.0
+charset-normalizer==3.3.2
+idna==3.7
+pydantic==2.8.0
+pydantic_core==2.20.0
+PyJWT==2.8.0
+requests==2.32.3
+rapidfuzz==3.10.1
