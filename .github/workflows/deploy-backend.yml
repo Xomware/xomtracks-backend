@@ -238,8 +238,18 @@ jobs:
             --region $AWS_REGION || echo "Function $FUNCTION_NAME not found, skipping..."
 
   deploy-changed-lambdas:
-    needs: [detect-changes, test-lambdas, deploy-layer]
-    if: always() && needs.detect-changes.outputs.has_lambda_changes == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
+    # Explicitly sequenced AFTER update-all-lambdas-layer (not just
+    # deploy-layer) -- discovered live, not theoretical: running both
+    # concurrently against the same function (this job's
+    # update-function-code vs. update-all-lambdas-layer's
+    # update-function-configuration) hits Lambda's "one update operation
+    # in flight per function" constraint (ResourceConflictException: "An
+    # update is in progress for resource"). 3 of 4 functions hit this on
+    # the first real `deploy_mode=all` run; the 4th happened to win the
+    # race. Waiting on update-all-lambdas-layer (success OR skipped, same
+    # pattern as test-lambdas below) eliminates the race entirely.
+    needs: [detect-changes, test-lambdas, deploy-layer, update-all-lambdas-layer]
+    if: always() && needs.detect-changes.outputs.has_lambda_changes == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped') && (needs.update-all-lambdas-layer.result == 'success' || needs.update-all-lambdas-layer.result == 'skipped')
     runs-on: ubuntu-latest
     strategy:
       matrix:
