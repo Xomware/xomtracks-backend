@@ -70,15 +70,15 @@ def api_gateway_event():
 @pytest.fixture
 def authorized_event():
     """
-    Build an API Gateway event WITH the custom authorizer context populated
-    (per-user JWT auth), mirroring what API Gateway places into
-    requestContext.authorizer after the ported xomify-style Lambda
-    authorizer runs.
+    Build an API Gateway event WITH the Cognito authorizer context populated,
+    mirroring what the native COGNITO_USER_POOLS authorizer places into
+    requestContext.authorizer.claims after validating the caller's Cognito
+    ID token.
     """
 
     def _make(email: str = "dom@example.com", **overrides) -> dict:
         event = _base_api_gateway_event()
-        event["requestContext"] = {"authorizer": {"email": email}}
+        event["requestContext"] = {"authorizer": {"claims": {"email": email}}}
         event.update(overrides)
         return event
 
