@@ -165,6 +165,37 @@ class TestQueryByDirectionWindow:
         assert results == []
 
 
+class TestScanByMatchStatus:
+    """Whole-table filtered scan powering the matching sweep -- no GSI on
+    matchStatus (infrequent backfill/cron read)."""
+
+    def test_returns_only_matching_status(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import put_share_idempotent, scan_shares_by_match_status, derive_share_id
+
+        pending = dict(sample_share)
+        pending["matchStatus"] = "pending"
+        pending["shareId"] = derive_share_id("gp", "urlp")
+        pending["messageGuid"] = "gp"
+        pending["sourceUrl"] = "urlp"
+
+        matched = dict(sample_share)
+        matched["matchStatus"] = "matched"
+        matched["shareId"] = derive_share_id("gm", "urlm")
+        matched["messageGuid"] = "gm"
+        matched["sourceUrl"] = "urlm"
+
+        for s in (pending, matched):
+            put_share_idempotent(s)
+
+        results = scan_shares_by_match_status("pending")
+        assert [r["messageGuid"] for r in results] == ["gp"]
+
+    def test_empty_when_no_matches(self, ddb_table):
+        from lambdas.common.shares_dynamo import scan_shares_by_match_status
+
+        assert scan_shares_by_match_status("pending") == []
+
+
 class TestQueryBySharer:
     """GSI-2 -- reserved for the by-sharer fast-follow, but the table +
     query function exist now (cheap, per PLAN.md)."""

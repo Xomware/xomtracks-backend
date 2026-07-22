@@ -43,7 +43,16 @@ class Spotify:
 
     BASE_URL = "https://api.spotify.com/v1"
 
-    def __init__(self, user: dict, session: aiohttp.ClientSession = None):
+    def __init__(self, user: dict = None, session: aiohttp.ClientSession = None, app_only: bool = False):
+        # app_only: NEW (xomtracks-only, not in xomify's copy) -- authenticate
+        # via the client-credentials (app-token) flow instead of a user
+        # refresh token. Valid ONLY for the public, read-only endpoints the
+        # cross-platform matcher uses (GET /tracks, /search); it grants no
+        # user scope (no playlist writes). Lets the matching sweep run with
+        # just the /xomtracks/spotify/* app credentials -- no per-user
+        # refresh token, no users-table row required.
+        self.app_only = app_only
+        user = user or {}
         log.info(f"Initializing Spotify Client for User {user.get('email', 'unknown')}.")
         # Accessed via the module object (not `from ... import NAME`) so the
         # SSM fetch stays genuinely lazy -- deferred to first Spotify()
@@ -68,11 +77,75 @@ class Spotify:
 
         # Initialize synchronously if no aiohttp session
         if not self.aiohttp_session:
-            self.access_token = self.get_access_token()
-            self.headers = {
-                'Authorization': f'Bearer {self.access_token}',
-                'Content-Type': 'application/json'
-            }
+            self.access_token = (
+                self.get_app_access_token() if self.app_only else self.get_access_token()
+            )
+            self.headers = self._auth_headers(self.access_token)
+
+    @staticmethod
+    def _auth_headers(access_token: str) -> dict:
+        return {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json',
+        }
+
+    # ------------------------
+    # App-token auth (client-credentials) -- NEW, xomtracks-only.
+    # ------------------------
+    # Not in xomify's vendored copy: xomify always acts as a specific user
+    # (playlist writes need user scope). xomtracks' matching sweep only
+    # reads public catalog data (GET /tracks, /search), which the
+    # client-credentials flow covers without any user refresh token.
+    def get_app_access_token(self) -> str:
+        """Get an app access token via client-credentials (synchronous)."""
+        try:
+            log.info("Getting spotify app access token (client-credentials)...")
+            response = requests.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    'grant_type': 'client_credentials',
+                    'client_id': self.client_id,
+                    'client_secret': self.client_secret,
+                },
+            )
+            response_data = response.json()
+            if response.status_code != 200:
+                raise Exception(f"Error getting app token: {response_data}")
+            log.info("Successfully retrieved spotify app access token!")
+            return response_data['access_token']
+        except Exception as err:
+            log.error(f"Get Spotify App Access Token: {err}")
+            raise Exception(f"Get Spotify App Access Token: {err}") from err
+
+    async def aiohttp_get_app_access_token(self) -> str:
+        """Get an app access token via client-credentials (async)."""
+        try:
+            log.info("Getting spotify app access token (aiohttp, client-credentials)...")
+            async with self.aiohttp_session.post(
+                "https://accounts.spotify.com/api/token",
+                data={
+                    'grant_type': 'client_credentials',
+                    'client_id': self.client_id,
+                    'client_secret': self.client_secret,
+                },
+            ) as response:
+                response_data = await response.json()
+                if response.status != 200:
+                    raise Exception(f"Error getting app token: {response_data}")
+                log.info("Successfully retrieved spotify app access token!")
+                return response_data['access_token']
+        except Exception as err:
+            log.error(f"AIOHTTP Get Spotify App Access Token: {err}")
+            raise Exception(f"AIOHTTP Get Spotify App Access Token: {err}") from err
+
+    async def aiohttp_initialize_app_token(self) -> None:
+        """
+        Fetch an app token and populate self.headers for the async
+        endpoints (aiohttp_get_track / aiohttp_search_track). Call once
+        after constructing with app_only=True and an aiohttp session.
+        """
+        self.access_token = await self.aiohttp_get_app_access_token()
+        self.headers = self._auth_headers(self.access_token)
 
     def get_access_token(self) -> str:
         """Get access token using refresh token (synchronous)."""
