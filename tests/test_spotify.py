@@ -62,6 +62,54 @@ class TestAiohttpGetAccessToken:
             await spotify.aiohttp_get_access_token()
 
 
+class TestAppOnlyClientCredentials:
+    """NEW (xomtracks-only): client-credentials app-token auth for the
+    read-only matcher endpoints -- no user refresh token required."""
+
+    def test_sync_app_token_populates_headers(self):
+        from lambdas.common import spotify as spotify_mod
+        from lambdas.common.spotify import Spotify
+        import requests
+
+        class FakeSyncResponse:
+            status_code = 200
+
+            def json(self):
+                return {"access_token": "APP-TOKEN"}
+
+        with patch.object(requests, "post", return_value=FakeSyncResponse()):
+            client = Spotify(app_only=True)
+
+        assert client.app_only is True
+        assert client.refresh_token == ""
+        assert client.access_token == "APP-TOKEN"
+        assert client.headers["Authorization"] == "Bearer APP-TOKEN"
+
+    @pytest.mark.asyncio
+    async def test_async_app_token_initialize(self):
+        from lambdas.common.spotify import Spotify
+
+        session = FakeSession()
+        session.queue("post", FakeResponse(200, {"access_token": "ASYNC-APP-TOKEN"}))
+
+        client = Spotify(app_only=True, session=session)
+        await client.aiohttp_initialize_app_token()
+
+        assert client.access_token == "ASYNC-APP-TOKEN"
+        assert client.headers["Authorization"] == "Bearer ASYNC-APP-TOKEN"
+
+    @pytest.mark.asyncio
+    async def test_async_app_token_error_raises(self):
+        from lambdas.common.spotify import Spotify
+
+        session = FakeSession()
+        session.queue("post", FakeResponse(400, {"error": "invalid_client"}))
+
+        client = Spotify(app_only=True, session=session)
+        with pytest.raises(Exception):
+            await client.aiohttp_initialize_app_token()
+
+
 class TestBatchGetTracks:
     def test_chunks_over_50_and_filters_none(self, user):
         from lambdas.common.spotify import Spotify

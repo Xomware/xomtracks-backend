@@ -21,7 +21,7 @@ import uuid
 from decimal import Decimal
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 from lambdas.common.constants import SHARES_TABLE_NAME, SHARES_DIRECTION_INDEX, SHARES_SHARER_INDEX
 from lambdas.common.errors import DynamoDBError
@@ -133,6 +133,33 @@ def update_match_result(share_id: str, **fields) -> dict:
     except Exception as err:
         log.error(f"Update match result failed: {err}")
         raise DynamoDBError(message=str(err), function="update_match_result", table=SHARES_TABLE_NAME)
+
+
+def scan_shares_by_match_status(match_status: str) -> list[dict]:
+    """
+    Scan the whole xomtracks-shares table for items with the given
+    matchStatus (e.g. 'pending'). There is no GSI on matchStatus -- the
+    matching sweep is an infrequent, whole-table backfill/cron pass, so a
+    filtered Scan (paginated) is the right tool rather than provisioning an
+    index for a low-frequency read.
+
+    Returns every matching item across all Scan pages.
+    """
+    try:
+        table = dynamodb.Table(SHARES_TABLE_NAME)
+        items: list[dict] = []
+        kwargs = {"FilterExpression": Attr("matchStatus").eq(match_status)}
+        while True:
+            res = table.scan(**kwargs)
+            items.extend(res.get("Items", []))
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
+    except Exception as err:
+        log.error(f"Scan shares by match status failed: {err}")
+        raise DynamoDBError(message=str(err), function="scan_shares_by_match_status", table=SHARES_TABLE_NAME)
 
 
 def query_shares_by_direction(direction: str, since_epoch: int) -> list[dict]:
