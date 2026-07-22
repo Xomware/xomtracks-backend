@@ -4,8 +4,10 @@
 
 ## What This Is
 Python Lambda backend for Xomtracks. Vendors trimmed copies of xomify's
-Spotify OAuth + playlist code (self-contained, own token-keepalive — does
-NOT import cross-repo from xomify-backend). Owns the cross-platform
+Spotify OAuth + playlist CODE (does NOT import cross-repo from
+xomify-backend), but REUSES xomify's Spotify app credentials (cross-app SSM
+`data` source from `/xomify/spotify/*`) and Dom's existing xomify refresh
+token. Owns the cross-platform
 matching module (Spotify/SoundCloud/Apple Music -> Spotify) and the rolling
 weekly playlist crons. Also houses `extractor/` — the local, read-only
 `chat.db` reader (launchd job on Dom's primary macOS login, NOT a Lambda).
@@ -41,16 +43,21 @@ test_commands:
 ```
 
 ## Constraints
-- Vendored `spotify.py`/`playlist.py` are copies, not shared imports — sync
-  by hand if xomify's token flow changes (accepted drift, see PLAN.md Risks).
-- Xomtracks has its OWN token-keepalive and users/token row — does not touch
-  xomify's.
+- Vendored `spotify.py`/`playlist.py` are copies of the CODE, not shared
+  imports — sync by hand if xomify's token flow changes (accepted drift,
+  see PLAN.md Risks).
+- Spotify CREDENTIALS are reused from xomify: the app client id/secret come
+  via a cross-app `data "aws_ssm_parameter"` from `/xomify/spotify/*` (same
+  pattern as SoundCloud from xomcloud), and xomtracks reuses Dom's existing
+  xomify refresh token (already has playlist-modify scopes, rotation-safe).
 - `create_playlist` flag is parameterized; xomtracks defaults `public=True`
   for all three playlists (both rolling + on-the-spot).
 - Cognito: reuse the SHARED `xomware_users` pool (data_cognito.tf in the
-  infra repo) — gates the frontend route, not this API. This API's own
-  auth is a homegrown HS256 JWT (`auth_login`, ported from xomify) plus a
-  separate scoped SSM bearer key for the extractor's ingest push.
+  infra repo). The authed API routes are gated by the NATIVE Cognito
+  authorizer (`COGNITO_USER_POOLS`) against that pool. The homegrown HS256
+  JWT (`auth_login`, ported from xomify) is now LEGACY and no longer gates
+  the shares routes. The extractor's ingest push still uses a separate
+  scoped SSM bearer key (unchanged).
 - `extractor/` is READ-ONLY against `chat.db` — never sends iMessages, never
   writes to the DB. Tracks progress by `message.ROWID` (insert order), not
   `message.date`, so iCloud history backfill (new ROWIDs, old dates) is
