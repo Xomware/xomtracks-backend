@@ -39,10 +39,10 @@ from lambdas.common.genres import (
 from lambdas.common.logger import get_logger
 
 # NOTE: shares_dynamo / spotify are imported lazily inside the live-edge
-# functions (not at module top) -- both create a boto3 resource at import
-# time, and keeping them off this module's import path lets the pure unit
-# tests import the logic without touching boto3 (same rationale as
-# album_art_backfill).
+# functions (not at module top) -- keeping them off this module's import path
+# lets the pure unit tests import the logic without pulling in their AWS/HTTP
+# deps (same rationale as album_art_backfill). Those modules now build their
+# boto3 resources lazily on first use too, so import order can't leak creds.
 
 log = get_logger(__file__)
 

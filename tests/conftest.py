@@ -10,8 +10,17 @@ from unittest.mock import MagicMock
 # Add repo root to path so `lambdas.*` / `extractor.*` imports resolve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-# Set required env vars before any lambda modules are imported
+# Set required env vars before any lambda modules are imported.
+# NOTE: the AWS_* credential vars below are FAKE and exist purely so boto3's
+# credential resolver never reaches out to real AWS (or fails with
+# NoCredentialsError) during collection/import. The per-test `_fake_aws_creds`
+# autouse fixture re-asserts them for every test body; this module-level block
+# covers anything that runs at import/collection time.
 _TEST_ENV_VARS = {
+    "AWS_ACCESS_KEY_ID": "testing",
+    "AWS_SECRET_ACCESS_KEY": "testing",
+    "AWS_SESSION_TOKEN": "testing",
+    "AWS_SECURITY_TOKEN": "testing",
     "AWS_DEFAULT_REGION": "us-east-1",
     "DYNAMODB_KMS_ALIAS": "alias/xomtracks-kms-test",
     "SHARES_TABLE_NAME": "xomtracks-shares-test",
@@ -43,6 +52,28 @@ _ssm_helpers._ssm_cache.update({
     '/xomtracks/ses/FROM_ADDRESS': 'noreply@xomtracks.xomware.com',
     '/xomtracks/ses/CONFIGURATION_SET': 'xomtracks-notifications',
 })
+
+
+@pytest.fixture(autouse=True)
+def _fake_aws_creds(monkeypatch):
+    """
+    Force FAKE AWS credentials into the environment for EVERY test, so no test
+    can ever reach real AWS or fail with NoCredentialsError -- regardless of
+    import order, run mode, or the presence/absence of real creds on the host
+    or in CI.
+
+    This is the belt to the suspenders of the lazy boto3 getters in
+    lambdas/common/*: even if a module resolves credentials at an awkward
+    moment, it resolves THESE. monkeypatch.setenv OVERRIDES any real creds
+    (unlike the module-level os.environ.setdefault above, which only fills
+    gaps), so a developer running the suite on a machine with live AWS creds
+    still exercises moto, never production.
+    """
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testing")
+    monkeypatch.setenv("AWS_SECURITY_TOKEN", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
 
 
 @pytest.fixture

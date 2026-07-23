@@ -32,7 +32,22 @@ from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+_dynamodb = None
+
+
+def _get_dynamodb():
+    """
+    Lazily create (and cache) the DynamoDB resource on FIRST USE rather than at
+    import time. Deferring construction until a function actually runs keeps
+    import order from resolving/leaking AWS credentials -- tests import this
+    module freely and only bind to (mocked) AWS when they call a helper. Behavior
+    is identical to a module-level resource for real Lambda invocations.
+    """
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+    return _dynamodb
+
 
 STATUS_PENDING = "pending"
 STATUS_APPROVED = "approved"
@@ -84,7 +99,7 @@ def create_request(
     clean = {k: v for k, v in item.items() if v is not None}
 
     try:
-        table = dynamodb.Table(LINK_REQUESTS_TABLE_NAME)
+        table = _get_dynamodb().Table(LINK_REQUESTS_TABLE_NAME)
         table.put_item(Item=clean)
         log.info(f"Link request created: {item['requestId']} for {requester_email} ({phone})")
         return item
@@ -97,7 +112,7 @@ def get_request(request_id: str) -> dict | None:
     """Fetch a single request by id. None if not found. Missing savedName/sub are
     normalized back to None so callers get a consistent shape."""
     try:
-        table = dynamodb.Table(LINK_REQUESTS_TABLE_NAME)
+        table = _get_dynamodb().Table(LINK_REQUESTS_TABLE_NAME)
         item = table.get_item(Key={"requestId": request_id}).get("Item")
         if item is None:
             return None
@@ -112,7 +127,7 @@ def get_request(request_id: str) -> dict | None:
 def list_by_status(status: str) -> list[dict]:
     """Every request with the given status (filtered Scan, paginated)."""
     try:
-        table = dynamodb.Table(LINK_REQUESTS_TABLE_NAME)
+        table = _get_dynamodb().Table(LINK_REQUESTS_TABLE_NAME)
         items: list[dict] = []
         kwargs = {"FilterExpression": Attr("status").eq(status)}
         while True:
@@ -140,7 +155,7 @@ def has_pending_for_email(email: str) -> bool:
     if not email:
         return False
     try:
-        table = dynamodb.Table(LINK_REQUESTS_TABLE_NAME)
+        table = _get_dynamodb().Table(LINK_REQUESTS_TABLE_NAME)
         kwargs = {
             "FilterExpression": Attr("status").eq(STATUS_PENDING) & Attr("requesterEmail").eq(email),
             "Limit": 1,
@@ -175,7 +190,7 @@ def set_status(request_id: str, status: str) -> dict:
         )
     now = int(time.time())
     try:
-        table = dynamodb.Table(LINK_REQUESTS_TABLE_NAME)
+        table = _get_dynamodb().Table(LINK_REQUESTS_TABLE_NAME)
         res = table.update_item(
             Key={"requestId": request_id},
             UpdateExpression="SET #s = :s, #u = :u",
