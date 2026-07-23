@@ -15,13 +15,27 @@ from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+_dynamodb = None
+
+
+def _get_dynamodb():
+    """
+    Lazily create (and cache) the DynamoDB resource on FIRST USE rather than at
+    import time. Deferring construction until a function actually runs keeps
+    import order from resolving/leaking AWS credentials -- tests import this
+    module freely and only bind to (mocked) AWS when they call a helper. Behavior
+    is identical to a module-level resource for real Lambda invocations.
+    """
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+    return _dynamodb
 
 
 def update_table_item_field(table_name: str, key_name: str, key_value: str, field_name: str, field_value) -> None:
     """Update a single field on a single item, by primary key."""
     try:
-        table = dynamodb.Table(table_name)
+        table = _get_dynamodb().Table(table_name)
         table.update_item(
             Key={key_name: key_value},
             UpdateExpression="SET #f = :v",
@@ -45,7 +59,7 @@ def get_app_service_user() -> dict:
     from lambdas.common.constants import USERS_TABLE_NAME
 
     try:
-        table = dynamodb.Table(USERS_TABLE_NAME)
+        table = _get_dynamodb().Table(USERS_TABLE_NAME)
         res = table.get_item(Key={"email": APP_SERVICE_USER_EMAIL})
     except Exception as err:
         log.error(f"Get app service user failed: {err}")

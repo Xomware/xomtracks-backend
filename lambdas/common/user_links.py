@@ -32,7 +32,22 @@ from lambdas.common.logger import get_logger
 
 log = get_logger(__file__)
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+_dynamodb = None
+
+
+def _get_dynamodb():
+    """
+    Lazily create (and cache) the DynamoDB resource on FIRST USE rather than at
+    import time. Deferring construction until a function actually runs keeps
+    import order from resolving/leaking AWS credentials -- tests import this
+    module freely and only bind to (mocked) AWS when they call a helper. Behavior
+    is identical to a module-level resource for real Lambda invocations.
+    """
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+    return _dynamodb
+
 
 RECORD_TYPE_USER_LINK = "userLink"
 LINKED_HANDLES_ATTR = "linkedHandles"
@@ -41,7 +56,7 @@ LINKED_HANDLES_ATTR = "linkedHandles"
 def get_user_record(email: str) -> dict | None:
     """Fetch a caller's user-link row by Cognito email. None if not linked."""
     try:
-        table = dynamodb.Table(USERS_TABLE_NAME)
+        table = _get_dynamodb().Table(USERS_TABLE_NAME)
         res = table.get_item(Key={"email": email})
         return res.get("Item")
     except Exception as err:
@@ -77,7 +92,7 @@ def link_phone(email: str, normalized_handle: str, sub: str | None = None) -> se
 
     now = int(time.time())
     try:
-        table = dynamodb.Table(USERS_TABLE_NAME)
+        table = _get_dynamodb().Table(USERS_TABLE_NAME)
 
         expr_names = {
             "#h": LINKED_HANDLES_ATTR,

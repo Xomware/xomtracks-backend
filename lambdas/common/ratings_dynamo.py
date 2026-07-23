@@ -37,7 +37,22 @@ from lambdas.common.track_key import derive_track_key
 
 log = get_logger(__file__)
 
-dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+_dynamodb = None
+
+
+def _get_dynamodb():
+    """
+    Lazily create (and cache) the DynamoDB resource on FIRST USE rather than at
+    import time. Deferring construction until a function actually runs keeps
+    import order from resolving/leaking AWS credentials -- tests import this
+    module freely and only bind to (mocked) AWS when they call a helper. Behavior
+    is identical to a module-level resource for real Lambda invocations.
+    """
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb", region_name=AWS_DEFAULT_REGION)
+    return _dynamodb
+
 
 RATING_MIN = 1
 RATING_MAX = 5
@@ -71,7 +86,7 @@ def get_track_rating_rows(track_key: str) -> list[dict]:
     if not track_key:
         return []
     try:
-        table = dynamodb.Table(RATINGS_TABLE_NAME)
+        table = _get_dynamodb().Table(RATINGS_TABLE_NAME)
         items: list[dict] = []
         kwargs = {"KeyConditionExpression": Key("trackKey").eq(track_key)}
         while True:
@@ -133,7 +148,7 @@ def set_rating(track_key: str, rater_email: str, rating: int) -> dict:
 
     now = int(time.time())
     try:
-        table = dynamodb.Table(RATINGS_TABLE_NAME)
+        table = _get_dynamodb().Table(RATINGS_TABLE_NAME)
         table.put_item(
             Item={
                 "trackKey": track_key,
@@ -181,7 +196,7 @@ def list_ratings_for_rater(rater_email: str) -> list[dict]:
     if not rater_email:
         return []
     try:
-        table = dynamodb.Table(RATINGS_TABLE_NAME)
+        table = _get_dynamodb().Table(RATINGS_TABLE_NAME)
         items: list[dict] = []
         kwargs = {"FilterExpression": Attr("raterEmail").eq(rater_email)}
         while True:

@@ -32,7 +32,21 @@ log = get_logger(__file__)
 # Fixed namespace so derive_share_id() is deterministic across processes/runs.
 _SHARE_ID_NAMESPACE = uuid.UUID("6f6e0d9e-6d9a-4c8d-9b7a-2a6c9c8f7a11")
 
-dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+_dynamodb = None
+
+
+def _get_dynamodb():
+    """
+    Lazily create (and cache) the DynamoDB resource on FIRST USE rather than at
+    import time. Deferring construction until a function actually runs keeps
+    import order from resolving/leaking AWS credentials -- tests import this
+    module freely and only bind to (mocked) AWS when they call a helper. Behavior
+    is identical to a module-level resource for real Lambda invocations.
+    """
+    global _dynamodb
+    if _dynamodb is None:
+        _dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+    return _dynamodb
 
 
 def derive_share_id(message_guid: str, source_url: str) -> str:
@@ -70,7 +84,7 @@ def put_share_idempotent(share: dict) -> tuple[dict, bool]:
         (item, created) where created is False if the item already existed
         (idempotent re-ingest, not an error).
     """
-    table = dynamodb.Table(SHARES_TABLE_NAME)
+    table = _get_dynamodb().Table(SHARES_TABLE_NAME)
     clean_share = _strip_none(share)
     try:
         table.put_item(
@@ -91,7 +105,7 @@ def put_share_idempotent(share: dict) -> tuple[dict, bool]:
 def get_share(share_id: str) -> dict | None:
     """Fetch a single share by id. Returns None if not found."""
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         res = table.get_item(Key={"shareId": share_id})
         return res.get("Item")
     except Exception as err:
@@ -117,7 +131,7 @@ def update_match_result(share_id: str, **fields) -> dict:
         raise DynamoDBError(message="No fields to update", function="update_match_result", table=SHARES_TABLE_NAME)
 
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in fields)
         expr_names = {f"#{k}": k for k in fields}
         expr_values = {f":{k}": _to_dynamo_value(v) for k, v in fields.items()}
@@ -146,7 +160,7 @@ def scan_shares_by_match_status(match_status: str) -> list[dict]:
     Returns every matching item across all Scan pages.
     """
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         items: list[dict] = []
         kwargs = {"FilterExpression": Attr("matchStatus").eq(match_status)}
         while True:
@@ -182,7 +196,7 @@ def scan_shares_by_normalized_handles(handles: set[str], since_epoch: int = 0) -
         return []
 
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         items: list[dict] = []
         kwargs = {
             "FilterExpression": Attr("sharerHandle").exists() & Attr("messageDate").gte(since_epoch),
@@ -210,7 +224,7 @@ def query_shares_by_direction(direction: str, since_epoch: int) -> list[dict]:
     since_epoch, via GSI-1. Powers GET /shares?direction=&window=.
     """
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         items: list[dict] = []
         kwargs = {
             "IndexName": SHARES_DIRECTION_INDEX,
@@ -237,7 +251,7 @@ def query_shares_by_sharer(sharer_handle: str, since_epoch: int) -> list[dict]:
     calls this yet.
     """
     try:
-        table = dynamodb.Table(SHARES_TABLE_NAME)
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
         items: list[dict] = []
         kwargs = {
             "IndexName": SHARES_SHARER_INDEX,
