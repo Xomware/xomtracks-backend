@@ -15,6 +15,7 @@ __SPOTIFY_ROOT = f'/{PRODUCT}/spotify/'
 __API_ROOT = f'/{PRODUCT}/api/'
 __INGEST_ROOT = f'/{PRODUCT}/ingest/'
 __SOUNDCLOUD_ROOT = f'/{PRODUCT}/soundcloud/'
+__SES_ROOT = f'/{PRODUCT}/ses/'
 
 # Lazy-initialized SSM parameters
 _ssm_cache: dict[str, str] = {}
@@ -82,6 +83,11 @@ def __getattr__(name: str) -> str:
         # Scraped SoundCloud client_id (xomcloud pattern) -- used to
         # resolve SoundCloud metadata for cross-platform matching.
         'SOUNDCLOUD_CLIENT_ID': f'{__SOUNDCLOUD_ROOT}CLIENT_ID',
+        # SES sender identity + configuration set for admin notification
+        # emails (phone-link approval requests). Published to SSM by
+        # xomtracks-infrastructure/terraform/ses.tf.
+        'SES_FROM_ADDRESS': f'{__SES_ROOT}FROM_ADDRESS',
+        'SES_CONFIGURATION_SET': f'{__SES_ROOT}CONFIGURATION_SET',
     }
     if name in param_map:
         return _get_ssm_param(param_map[name])

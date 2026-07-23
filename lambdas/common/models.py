@@ -154,6 +154,23 @@ class LinkPhoneRequest(BaseModel):
         return v.strip()
 
 
+class AdminRequestDecision(BaseModel):
+    """
+    POST /admin/approve and POST /admin/deny -- the admin (Dom) resolves a
+    pending phone-link request by id. Approve creates the actual link + marks
+    the request approved; deny just marks it denied.
+    """
+
+    requestId: str = Field(min_length=1)
+
+    @field_validator("requestId")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("requestId must not be blank")
+        return v.strip()
+
+
 class SetRatingRequest(BaseModel):
     """
     POST /ratings/set -- the caller rates a SONG 1-5 (whole-group rating; any

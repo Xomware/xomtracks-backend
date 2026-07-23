@@ -260,6 +260,31 @@ def get_caller_sub(event: dict) -> Optional[str]:
     return None
 
 
+def require_admin(event: dict) -> str:
+    """
+    Resolve the caller's Cognito email AND assert it is the configured admin
+    (Dom). Gates the /admin/* routes on top of the native COGNITO_USER_POOLS
+    authorizer -- any signed-in Xomware member passes the authorizer, but only
+    the admin may list/approve/deny link requests.
+
+    Returns the admin email on success. Raises MissingCallerIdentityError (401)
+    if there is no caller identity, or ForbiddenError (403) if the caller is
+    signed in but is not the admin.
+    """
+    from lambdas.common.constants import ADMIN_EMAIL
+    from lambdas.common.errors import ForbiddenError
+
+    email = get_caller_email(event)
+    if not ADMIN_EMAIL or email.strip().lower() != ADMIN_EMAIL.strip().lower():
+        raise ForbiddenError(
+            message="Admin access required",
+            handler="utility_helpers",
+            function="require_admin",
+            reason="not_admin",
+        )
+    return email
+
+
 def require_ingest_bearer_key(event: dict, expected_key: str) -> None:
     """
     Validate the extractor's scoped bearer key on POST /shares/ingest.
