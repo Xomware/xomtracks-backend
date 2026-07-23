@@ -22,6 +22,8 @@ _TEST_ENV_VARS = {
     "RATINGS_TABLE_NAME": "xomtracks-ratings-test",
     "HEARD_TABLE_NAME": "xomtracks-heard-test",
     "AUTO_HEARD_RATER_EMAIL": "dom@example.com",
+    "LINK_REQUESTS_TABLE_NAME": "xomtracks-link-requests-test",
+    "ADMIN_EMAIL": "dominickj.giordano@gmail.com",
 }
 for key, value in _TEST_ENV_VARS.items():
     os.environ.setdefault(key, value)
@@ -38,6 +40,8 @@ _ssm_helpers._ssm_cache.update({
     '/xomtracks/api/API_SECRET_KEY': 'test-api-secret-key',
     '/xomtracks/ingest/BEARER_KEY': 'test-ingest-key',
     '/xomtracks/soundcloud/CLIENT_ID': 'test-soundcloud-client-id',
+    '/xomtracks/ses/FROM_ADDRESS': 'noreply@xomtracks.xomware.com',
+    '/xomtracks/ses/CONFIGURATION_SET': 'xomtracks-notifications',
 })
 
 

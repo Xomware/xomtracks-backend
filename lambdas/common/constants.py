@@ -49,6 +49,15 @@ APP_SERVICE_USER_EMAIL = os.environ.get('APP_SERVICE_USER_EMAIL', '')
 # computed by querying the trackKey partition. See ratings_dynamo.py.
 RATINGS_TABLE_NAME = os.environ.get('RATINGS_TABLE_NAME', '')
 
+# xomtracks-link-requests: pending phone-link requests under the ADMIN-APPROVAL
+# model. A member's POST /me/link-phone creates a PENDING row here (it no longer
+# links immediately); the admin (Dom) approves/denies it via the /admin/* routes.
+# PK requestId (uuid4). attrs: requesterEmail (Cognito caller), phone (normalized
+# last-10), savedName (Dom's saved contact name for that number, or null), sub
+# (Cognito sub, optional), status ("pending"|"approved"|"denied"), createdAt,
+# updatedAt. See link_requests.py.
+LINK_REQUESTS_TABLE_NAME = os.environ.get('LINK_REQUESTS_TABLE_NAME', '')
+
 # xomtracks-heard: per-(track, user) LISTEN state -- a sibling table to
 # xomtracks-ratings with the identical key shape (PK trackKey, SK raterEmail),
 # so a member's "heard" flag follows the SONG across all of its share instances.
@@ -121,6 +130,21 @@ PLAYABLE_MATCH_STATUSES = ('matched', 'manual')
 AUTO_HEARD_RATER_EMAIL = os.environ.get('AUTO_HEARD_RATER_EMAIL', '')
 
 # ============================================
+# Admin approval + notifications
+# ============================================
+# The single admin (Dom) allowed to hit the /admin/* routes. A route caller's
+# Cognito email must equal this (case-insensitive) or the request is 403'd.
+# Set via env by Terraform (locals.tf lambda_variables); safe real default for
+# local/test.
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'dominickj.giordano@gmail.com')
+
+# SES sender identity + configuration set for admin notification emails. Values
+# are published to SSM by xomtracks-infrastructure/terraform/ses.tf and read
+# lazily at runtime via ssm_helpers (SES_FROM_ADDRESS / SES_CONFIGURATION_SET).
+SES_ROOT = f'/{PRODUCT}/ses/'
+
+# ============================================
 # Misc
 # ============================================
 XOMTRACKS_URL = "https://xomtracks.xomware.com"
+XOMTRACKS_ADMIN_URL = "https://xomtracks.xomware.com/admin"
