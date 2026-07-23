@@ -4,7 +4,11 @@ into zero or more share-ingest dicts (POST /shares/ingest body shape).
 """
 
 from extractor.chat_reader import apple_epoch_to_unix
-from tests.chat_db_fixture import apple_ns_from_unix, bplist_attributed_body
+from tests.chat_db_fixture import (
+    apple_ns_from_unix,
+    bplist_attributed_body,
+    typedstream_attributed_body,
+)
 
 
 def _row(
@@ -92,6 +96,22 @@ class TestBuildSharesFromMessage:
         # Same URL present in both text and attributedBody -> one share, not two.
         assert len(shares) == 1
 
+    def test_text_and_typedstream_body_same_link_dedups_to_one_share(self):
+        # Regression for the production "everything is duplicated" bug: a
+        # legacy link-preview message carries the URL cleanly in `text` and
+        # again in a typedstream `attributedBody` whose recovered URL had a
+        # `WHttpURL/` tail glued on. Once the extractor strips that tail, the
+        # two copies are byte-identical and collapse to a SINGLE share.
+        from extractor.share_builder import build_shares_from_message
+
+        url = "https://open.spotify.com/track/18FN1Kz7KMF0ujN6ID4ans?si=51O0VWtpSOakkx"
+        blob = typedstream_attributed_body(url, glue_url_tail=True)
+        row = _row(text=url, attributed_body=blob, is_from_me=0, handle_identifier="+1")
+        shares = build_shares_from_message(row)
+
+        assert len(shares) == 1
+        assert shares[0]["sourceUrl"] == url
+
     def test_multiple_distinct_urls_produce_multiple_shares(self):
         from extractor.share_builder import build_shares_from_message
 
@@ -114,6 +134,49 @@ class TestBuildSharesFromMessage:
         row = _row(text="https://open.spotify.com/track/aaa", chat_id=None)
         shares = build_shares_from_message(row)
         assert shares[0]["chatId"] is None
+
+
+class TestSharerNameResolution:
+    def test_incoming_share_gets_resolved_sharer_name(self):
+        from extractor.share_builder import build_shares_from_message
+
+        row = _row(
+            text="https://open.spotify.com/track/abc123",
+            is_from_me=0,
+            handle_identifier="+13364042196",
+        )
+        shares = build_shares_from_message(row, resolve_name=lambda h: "Jordan Reyes")
+        assert shares[0]["sharerHandle"] == "+13364042196"
+        assert shares[0]["sharerName"] == "Jordan Reyes"
+
+    def test_unresolved_handle_leaves_name_none_but_keeps_handle(self):
+        from extractor.share_builder import build_shares_from_message
+
+        row = _row(text="https://open.spotify.com/track/abc123", is_from_me=0, handle_identifier="+15550001111")
+        shares = build_shares_from_message(row, resolve_name=lambda h: None)
+        assert shares[0]["sharerHandle"] == "+15550001111"
+        assert shares[0]["sharerName"] is None
+
+    def test_outgoing_share_has_no_name_lookup(self):
+        from extractor.share_builder import build_shares_from_message
+
+        calls = []
+
+        def resolver(h):
+            calls.append(h)
+            return "should not be used"
+
+        row = _row(text="https://soundcloud.com/x/y", is_from_me=1, handle_identifier=None)
+        shares = build_shares_from_message(row, resolve_name=resolver)
+        assert shares[0]["sharerName"] is None
+        assert calls == []
+
+    def test_no_resolver_defaults_name_to_none(self):
+        from extractor.share_builder import build_shares_from_message
+
+        row = _row(text="https://open.spotify.com/track/abc123", is_from_me=0, handle_identifier="+1")
+        shares = build_shares_from_message(row)
+        assert shares[0]["sharerName"] is None
 
 
 class TestBuildSharesFromMessages:

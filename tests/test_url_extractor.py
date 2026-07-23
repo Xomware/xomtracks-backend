@@ -76,6 +76,18 @@ class TestExtractUrlsFromAttributedBody:
         urls = extract_urls_from_attributed_body(blob)
         assert "https://soundcloud.com/artist/track-name" in urls
 
+    def test_typedstream_url_tail_marker_is_stripped(self):
+        # Real link-preview typedstream blobs glue the archived class token
+        # `WHttpURL/` directly onto the URL (no null separator) -- all
+        # URL-legal chars, so the greedy regex swallows them. The extractor
+        # must recover the CLEAN url, byte-identical to the `text` column's
+        # copy, or the same link doubles into two shares.
+        clean = "https://open.spotify.com/track/0kir0EgDtekhaB37RsU?si=abc123"
+        blob = typedstream_attributed_body(clean, glue_url_tail=True)
+        urls = extract_urls_from_attributed_body(blob)
+        assert urls == [clean]
+        assert not any("WHttpURL" in u for u in urls)
+
     def test_none_blob_returns_empty_list(self):
         assert extract_urls_from_attributed_body(None) == []
 

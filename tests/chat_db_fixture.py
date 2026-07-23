@@ -80,7 +80,7 @@ def bplist_attributed_body(url: str) -> bytes:
     return plistlib.dumps(payload, fmt=plistlib.FMT_BINARY)
 
 
-def typedstream_attributed_body(url: str) -> bytes:
+def typedstream_attributed_body(url: str, glue_url_tail: bool = True) -> bytes:
     """
     A stand-in for the legacy NeXT/Apple "typedstream" attributedBody
     format (starts with a streamtyped header, not `bplist00`). We don't
@@ -90,10 +90,22 @@ def typedstream_attributed_body(url: str) -> bytes:
     tools recover URLs from typedstream blobs in practice: the URL's ASCII
     bytes survive as a contiguous run even though the rest isn't valid
     UTF-8/plist).
+
+    Load-bearing realism (verified against Dom's live xomtracks-shares
+    table): typedstream link blobs do NOT place a null byte right after the
+    URL string. The archived link-attribute class token follows immediately,
+    and its leading bytes are ASCII (`WHttpURL/`) -- all URL-legal
+    characters. A greedy URL regex therefore runs straight past the real end
+    of the URL and swallows `WHttpURL/`, producing a second, corrupted copy
+    of the same link. That is exactly what doubled every link-preview share
+    in production. `glue_url_tail=True` reproduces that artifact so the
+    extractor's tail-stripping is tested against the real failure mode; set
+    it False for a blob whose URL happens to be followed by binary noise.
     """
     noise_before = bytes([0x04, 0x0B, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6D, 0x9F, 0x01, 0x00, 0x84, 0x01])
+    url_tail = b"WHttpURL/" if glue_url_tail else b""
     noise_after = bytes([0x00, 0x86, 0x84, 0x02, 0x69])
-    return noise_before + url.encode("utf-8") + noise_after
+    return noise_before + url.encode("utf-8") + url_tail + noise_after
 
 
 def insert_chat(conn: sqlite3.Connection, guid: str, chat_identifier: str) -> int:

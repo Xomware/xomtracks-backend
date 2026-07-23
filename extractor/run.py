@@ -23,6 +23,7 @@ import os
 import sys
 
 from extractor.chat_reader import fetch_new_messages, open_read_only_connection
+from extractor.contacts import build_resolver
 from extractor.ingest_client import push_share as default_push_share
 from extractor.logging_setup import get_logger
 from extractor.share_builder import build_shares_from_message
@@ -40,10 +41,16 @@ def run_once(
     bearer_key: str,
     immutable: bool = False,
     push_share=default_push_share,
+    resolve_name=None,
 ) -> dict:
     """
     Run a single extractor scan: since-last-watermark -> ingest push ->
     new watermark. Never writes to chat.db (opens strictly read-only).
+
+    `resolve_name` is an optional `(handle) -> name | None` callable
+    (extractor.contacts.build_resolver at the real edge); when provided,
+    incoming shares carry the sharer's resolved contact name. Injectable so
+    tests exercise scans without touching the host's Contacts DB.
 
     Returns a stats dict: scanned, shares_found, shares_pushed, failed,
     new_watermark.
@@ -65,7 +72,7 @@ def run_once(
     last_good_rowid = since_rowid
 
     for row in rows:
-        shares = build_shares_from_message(row)
+        shares = build_shares_from_message(row, resolve_name=resolve_name)
         shares_found += len(shares)
 
         message_fully_pushed = True
@@ -117,7 +124,19 @@ def main(argv: list[str] | None = None) -> int:
         log.error("Missing --ingest-url/--bearer-key (or XOMTRACKS_INGEST_URL/XOMTRACKS_INGEST_BEARER_KEY env vars)")
         return 2
 
-    stats = run_once(args.db_path, args.state_path, args.ingest_url, args.bearer_key, immutable=args.immutable)
+    # Resolve sharer phone/email handles to contact names from the host's
+    # local macOS Contacts (Full Disk Access, same as chat.db). Best-effort:
+    # build_resolver never raises -- off-host it just resolves nothing.
+    resolve_name = build_resolver()
+
+    stats = run_once(
+        args.db_path,
+        args.state_path,
+        args.ingest_url,
+        args.bearer_key,
+        immutable=args.immutable,
+        resolve_name=resolve_name,
+    )
     return 1 if stats["failed"] else 0
 
 
