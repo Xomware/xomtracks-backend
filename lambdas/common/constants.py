@@ -49,6 +49,14 @@ APP_SERVICE_USER_EMAIL = os.environ.get('APP_SERVICE_USER_EMAIL', '')
 # computed by querying the trackKey partition. See ratings_dynamo.py.
 RATINGS_TABLE_NAME = os.environ.get('RATINGS_TABLE_NAME', '')
 
+# xomtracks-heard: per-(track, user) LISTEN state -- a sibling table to
+# xomtracks-ratings with the identical key shape (PK trackKey, SK raterEmail),
+# so a member's "heard" flag follows the SONG across all of its share instances.
+# attrs: trackKey, raterEmail, heard (bool), heardAt (epoch, "when heard"),
+# updatedAt. See heard_dynamo.py. Backs POST /heard/set, the auto-heard cron,
+# and the inline `heard` enrichment on /shares/list + /me/shares.
+HEARD_TABLE_NAME = os.environ.get('HEARD_TABLE_NAME', '')
+
 # ============================================
 # Auth
 # ============================================
@@ -99,6 +107,18 @@ ROLLING_PLAYLIST_NAMES = {
 # Match statuses whose shares carry a real resolvedSpotifyUri and are thus
 # eligible for playlists (pending/unmatched never are).
 PLAYABLE_MATCH_STATUSES = ('matched', 'manual')
+
+# ============================================
+# Auto-heard cron
+# ============================================
+# The Cognito email the auto-heard cron marks recently-played tracks heard
+# FOR. This is Dom's Cognito LOGIN email (NOT the Spotify service-account row
+# email, APP_SERVICE_USER_EMAIL) -- the heard flag must be keyed by the email
+# a user signs into the app with so it surfaces in that user's own "unheard"
+# filter on /shares/list. Dom-only for now; per-user Spotify OAuth (which would
+# map each member's recently-played to their own Cognito email) is a documented
+# fast-follow. Set via env by Terraform (locals.tf lambda_variables).
+AUTO_HEARD_RATER_EMAIL = os.environ.get('AUTO_HEARD_RATER_EMAIL', '')
 
 # ============================================
 # Misc

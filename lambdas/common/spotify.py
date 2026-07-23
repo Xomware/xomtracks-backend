@@ -321,6 +321,31 @@ class Spotify:
             return await response.json()
 
     # ------------------------
+    # Recently played (auto-heard cron -- NEW, not in xomify's copy)
+    # ------------------------
+    # Reads the USER's listening history via GET /v1/me/player/recently-played.
+    # Requires the `user-read-recently-played` scope on the user token (the
+    # service-account/Dom refresh token). Used by cron_auto_heard to mark
+    # recently-played tracks heard. Must be called after
+    # aiohttp_initialize_user_token (needs a USER token, not the app token).
+    async def aiohttp_get_recently_played(self, limit: int = 50) -> list:
+        """
+        `GET /v1/me/player/recently-played?limit=` -- the user's recently played
+        tracks, newest-first. Returns the raw `items` list (each item carries a
+        `track` object + a `played_at` ISO timestamp). Spotify caps `limit` at
+        50. Raises on a non-200 (a 403 here means the token lacks the
+        `user-read-recently-played` scope -- surfaced loud so the cron alarms).
+        """
+        capped = max(1, min(int(limit), 50))
+        url = f"{self.BASE_URL}/me/player/recently-played?limit={capped}"
+        async with self.aiohttp_session.get(url, headers=self.headers) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise Exception(f"Get recently played failed ({response.status}): {text}")
+            data = await response.json()
+            return data.get("items") or []
+
+    # ------------------------
     # Search (SoundCloud/Apple-Music resolver branches, matching.py)
     # ------------------------
     async def aiohttp_search_track(self, query: str, limit: int = 5) -> list:

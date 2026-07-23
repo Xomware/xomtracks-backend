@@ -28,7 +28,7 @@ import time
 from decimal import Decimal
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 from lambdas.common.constants import AWS_DEFAULT_REGION, RATINGS_TABLE_NAME
 from lambdas.common.errors import DynamoDBError, ValidationError
@@ -165,6 +165,36 @@ def batch_ratings_for_track_keys(track_keys: set[str], caller_email: str | None)
         if rows:
             result[track_key] = aggregate_rows(rows, caller_email)
     return result
+
+
+def list_ratings_for_rater(rater_email: str) -> list[dict]:
+    """
+    Every rating row the given caller has made, across ALL tracks/directions.
+    Each row is {trackKey, raterEmail, rating, updatedAt}.
+
+    There is no GSI on raterEmail (the table is keyed for the per-track
+    aggregate read); a member's own ratings are a low-frequency personal query
+    ("My Rated" screen), so a filtered Scan is the right tool -- same rationale
+    as scan_shares_by_match_status / scan_shares_by_normalized_handles. Returns
+    every matching row across all Scan pages.
+    """
+    if not rater_email:
+        return []
+    try:
+        table = dynamodb.Table(RATINGS_TABLE_NAME)
+        items: list[dict] = []
+        kwargs = {"FilterExpression": Attr("raterEmail").eq(rater_email)}
+        while True:
+            res = table.scan(**kwargs)
+            items.extend(res.get("Items", []))
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
+    except Exception as err:
+        log.error(f"List ratings for rater failed: {err}")
+        raise DynamoDBError(message=str(err), function="list_ratings_for_rater", table=RATINGS_TABLE_NAME)
 
 
 def enrich_shares_with_ratings(shares: list[dict], caller_email: str | None) -> list[dict]:

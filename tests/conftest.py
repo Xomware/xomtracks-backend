@@ -20,6 +20,8 @@ _TEST_ENV_VARS = {
     "USERS_TABLE_NAME": "xomtracks-users-test",
     "APP_SERVICE_USER_EMAIL": "app@xomtracks.xomware.com",
     "RATINGS_TABLE_NAME": "xomtracks-ratings-test",
+    "HEARD_TABLE_NAME": "xomtracks-heard-test",
+    "AUTO_HEARD_RATER_EMAIL": "dom@example.com",
 }
 for key, value in _TEST_ENV_VARS.items():
     os.environ.setdefault(key, value)

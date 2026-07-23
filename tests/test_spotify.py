@@ -276,3 +276,41 @@ class TestAiohttpSearchTrack:
 
         results = await spotify.aiohttp_search_track("nonsense query")
         assert results == []
+
+
+class TestAiohttpRecentlyPlayed:
+    @pytest.mark.asyncio
+    async def test_returns_items(self, user):
+        from lambdas.common.spotify import Spotify
+
+        session = FakeSession()
+        session.queue(
+            "get",
+            FakeResponse(200, {"items": [
+                {"track": {"id": "t1", "name": "Song"}, "played_at": "2026-07-20T12:00:00Z"},
+            ]}),
+        )
+
+        spotify = Spotify.__new__(Spotify)
+        spotify.aiohttp_session = session
+        spotify.headers = {"Authorization": "Bearer AT1"}
+
+        items = await spotify.aiohttp_get_recently_played(limit=50)
+        assert len(items) == 1
+        assert items[0]["track"]["id"] == "t1"
+        # limit is capped at Spotify's max of 50.
+        assert "limit=50" in session.calls[0][1]
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_403_raises(self, user):
+        from lambdas.common.spotify import Spotify
+
+        session = FakeSession()
+        session.queue("get", FakeResponse(403, {"error": "insufficient scope"}))
+
+        spotify = Spotify.__new__(Spotify)
+        spotify.aiohttp_session = session
+        spotify.headers = {"Authorization": "Bearer AT1"}
+
+        with pytest.raises(Exception, match="403"):
+            await spotify.aiohttp_get_recently_played()
