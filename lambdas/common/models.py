@@ -172,6 +172,25 @@ class SetRatingRequest(BaseModel):
         return v.strip()
 
 
+class SetHeardRequest(BaseModel):
+    """
+    POST /heard/set -- the caller marks a SONG heard/unheard. `trackKey` is the
+    normalized song identity the frontend received on a share (share.trackKey);
+    `heard` is the new listen state. Keyed per (track, caller) so it follows the
+    SONG across all of its share instances (same identity model as ratings).
+    """
+
+    trackKey: str = Field(min_length=1)
+    heard: bool
+
+    @field_validator("trackKey")
+    @classmethod
+    def track_key_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("trackKey must not be blank")
+        return v.strip()
+
+
 class CreatePlaylistRequest(BaseModel):
     """
     POST /playlists/create -- on-the-spot playlist build from a hand-picked

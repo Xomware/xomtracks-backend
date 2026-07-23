@@ -232,6 +232,7 @@ jobs:
           case "$FOLDER" in
             cron_rolling_playlists) FUNCTION_NAME="xomtracks-cron-rolling-playlists" ;;
             cron_token_keepalive)   FUNCTION_NAME="xomtracks-cron-token-keepalive" ;;
+            cron_auto_heard)        FUNCTION_NAME="xomtracks-cron-auto-heard" ;;
             matching_sweep)         FUNCTION_NAME="xomtracks-cron-matching-sweep" ;;
             *)
               DOMAIN="${FOLDER%%_*}"
@@ -299,6 +300,7 @@ jobs:
           case "$FOLDER" in
             cron_rolling_playlists) FUNCTION_NAME="xomtracks-cron-rolling-playlists" ;;
             cron_token_keepalive)   FUNCTION_NAME="xomtracks-cron-token-keepalive" ;;
+            cron_auto_heard)        FUNCTION_NAME="xomtracks-cron-auto-heard" ;;
             matching_sweep)         FUNCTION_NAME="xomtracks-cron-matching-sweep" ;;
             *)
               DOMAIN="${FOLDER%%_*}"

@@ -14,6 +14,7 @@ from typing import Any
 
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.genres import ensure_genres
+from lambdas.common.heard_dynamo import enrich_shares_with_heard
 from lambdas.common.logger import get_logger
 from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import query_shares_by_direction
@@ -76,6 +77,11 @@ def handler(event: dict, context: Any) -> dict:
     # renders whole-group ratings without N extra calls (batch-loaded for the
     # page's unique tracks).
     enrich_shares_with_ratings(shares, email)
+
+    # Attach each share's `heard` (the caller's per-song listen state, default
+    # False) so the feed can offer an "unheard" filter. Runs after the ratings
+    # enrichment so it can reuse the trackKey it already set on each share.
+    enrich_shares_with_heard(shares, email)
 
     # Guarantee every share carries `genres` as a string[] so the frontend
     # genre filter can read it unconditionally (historical shares default []).
