@@ -186,6 +186,40 @@ class TestMatchShareSoundcloudBranch:
         assert result["resolvedSpotifyId"] is None
 
     @pytest.mark.asyncio
+    async def test_unmatched_preserves_resolved_soundcloud_title_and_artist(self):
+        # A SoundCloud-only track that was never released to Spotify: no
+        # confident search match, but the resolved SoundCloud title/artist
+        # MUST survive on the unmatched share so the feed shows its real name
+        # instead of "Untitled".
+        share = {"platform": "soundcloud", "sourceUrl": "https://soundcloud.com/artist/exclusive-vip"}
+        spotify = FakeSpotify(search_results=[_spotify_track("t1", "Nothing Alike", "Someone Else")])
+
+        async def fake_resolver(url):
+            return ("Exclusive VIP Bootleg", "Underground DJ")
+
+        result = await match_share(share, spotify, soundcloud_resolver=fake_resolver)
+
+        assert result["matchStatus"] == "unmatched"
+        assert result["resolvedSpotifyId"] is None
+        assert result["trackTitle"] == "Exclusive VIP Bootleg"
+        assert result["trackArtist"] == "Underground DJ"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_metadata_stays_titleless(self):
+        # Resolver returns nothing at all -> there is no title to preserve.
+        share = {"platform": "soundcloud", "sourceUrl": "https://soundcloud.com/artist/dead-link"}
+        spotify = FakeSpotify()
+
+        async def fake_resolver(url):
+            return None
+
+        result = await match_share(share, spotify, soundcloud_resolver=fake_resolver)
+
+        assert result["matchStatus"] == "unmatched"
+        assert result["trackTitle"] is None
+        assert result["trackArtist"] is None
+
+    @pytest.mark.asyncio
     async def test_resolver_failure_is_unmatched_not_raised(self):
         share = {"platform": "soundcloud", "sourceUrl": "https://soundcloud.com/artist/track"}
         spotify = FakeSpotify()
@@ -223,6 +257,46 @@ class TestMatchShareAppleBranch:
         result = await match_share(share, spotify, apple_resolver=fake_resolver)
 
         assert result["matchStatus"] == "unmatched"
+
+    @pytest.mark.asyncio
+    async def test_unmatched_apple_preserves_resolved_title_and_artist(self):
+        share = {"platform": "apple", "sourceUrl": "https://music.apple.com/us/song/rare/000?i=1"}
+        spotify = FakeSpotify(search_results=[_spotify_track("t1", "Unrelated", "Nobody")])
+
+        async def fake_resolver(url):
+            return ("Rare Apple Exclusive", "Indie Artist")
+
+        result = await match_share(share, spotify, apple_resolver=fake_resolver)
+
+        assert result["matchStatus"] == "unmatched"
+        assert result["trackTitle"] == "Rare Apple Exclusive"
+        assert result["trackArtist"] == "Indie Artist"
+
+
+class TestSpotifyResultGenres:
+    """_spotify_result attaches `genres` ONLY when the caller resolved them --
+    otherwise the key is omitted so the genre backfill can tell an
+    un-enriched share (no key) from an enriched-but-genreless one ([])."""
+
+    def test_genres_omitted_when_not_provided(self):
+        from lambdas.common.matching import _spotify_result
+
+        result = _spotify_result(_spotify_track("t1", "Song", "Artist"), "matched", 1.0)
+        assert "genres" not in result
+
+    def test_genres_attached_when_provided(self):
+        from lambdas.common.matching import _spotify_result
+
+        result = _spotify_result(
+            _spotify_track("t1", "Song", "Artist"), "matched", 1.0, genres=["indie rock", "art pop"]
+        )
+        assert result["genres"] == ["indie rock", "art pop"]
+
+    def test_empty_genres_still_attaches_empty_list(self):
+        from lambdas.common.matching import _spotify_result
+
+        result = _spotify_result(_spotify_track("t1"), "matched", 1.0, genres=[])
+        assert result["genres"] == []
 
 
 class TestApplyManualOverride:

@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from lambdas.common.errors import ValidationError, handle_errors
+from lambdas.common.genres import ensure_genres
 from lambdas.common.logger import get_logger
 from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import query_shares_by_direction
@@ -75,5 +76,9 @@ def handler(event: dict, context: Any) -> dict:
     # renders whole-group ratings without N extra calls (batch-loaded for the
     # page's unique tracks).
     enrich_shares_with_ratings(shares, email)
+
+    # Guarantee every share carries `genres` as a string[] so the frontend
+    # genre filter can read it unconditionally (historical shares default []).
+    ensure_genres(shares)
 
     return success_response({"shares": shares, "direction": direction, "window": window, "count": len(shares)})

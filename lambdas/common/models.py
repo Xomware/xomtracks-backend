@@ -8,6 +8,8 @@ docs/features/xomtracks/PLAN.md.
 
 import re
 
+from typing import List
+
 from pydantic import BaseModel, Field, field_validator
 
 from lambdas.common.constants import MATCH_STATUSES, PLATFORMS
@@ -73,6 +75,10 @@ class Share(BaseModel):
     resolvedSpotifyUri: str | None = None
     matchStatus: str = "pending"
     matchConfidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Primary-artist genres (Spotify artist-level attribute), populated by the
+    # genre backfill/matching pipeline for the feed's genre filter. Empty list
+    # when unknown or not on Spotify -- the field is always a string[].
+    genres: List[str] = Field(default_factory=list)
     createdAt: str
 
     @field_validator("direction")

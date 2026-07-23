@@ -130,3 +130,39 @@ class TestSharesListQuery:
         event = authorized_event(queryStringParameters={"direction": "in", "window": "decade"})
         response = handler(event, mock_context)
         assert response["statusCode"] == 400
+
+
+class TestSharesListGenres:
+    """Every returned share must carry `genres` as a string[] so the frontend
+    genre filter can read it unconditionally -- stored genres pass through,
+    historical shares default to []."""
+
+    def test_all_shares_have_genres_list(self, seeded_table, authorized_event, mock_context):
+        from lambdas.shares_list.handler import handler
+
+        event = authorized_event(queryStringParameters={"direction": "in", "window": "all"})
+        response = handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        shares = body["data"]["shares"]
+        assert shares
+        assert all(isinstance(s["genres"], list) for s in shares)
+
+    def test_stored_genres_surface_in_response(self, seeded_table, authorized_event, mock_context):
+        from lambdas.shares_list.handler import handler
+
+        seeded_table.put_item(Item={
+            "shareId": "s9", "messageGuid": "g9", "direction": "in", "sharerHandle": "+1",
+            "chatId": "c1", "platform": "spotify", "sourceUrl": "url9",
+            "messageDate": int(time.time()) - 60, "matchStatus": "matched", "createdAt": "x",
+            "genres": ["indie rock", "art pop"],
+        })
+
+        event = authorized_event(queryStringParameters={"direction": "in", "window": "all"})
+        response = handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        by_id = {s["shareId"]: s for s in body["data"]["shares"]}
+        assert by_id["s9"]["genres"] == ["indie rock", "art pop"]
+        # A share with no stored genres still exposes an empty list.
+        assert by_id["s1"]["genres"] == []
