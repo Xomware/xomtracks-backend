@@ -14,6 +14,7 @@ from typing import Any
 
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
+from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import query_shares_by_direction
 from lambdas.common.utility_helpers import get_caller_email, get_query_params, success_response
 
@@ -40,8 +41,9 @@ def _since_epoch_for_window(window: str) -> int:
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
     # Authed route -- raises MissingCallerIdentityError (401) if the
-    # custom authorizer context is absent.
-    get_caller_email(event)
+    # custom authorizer context is absent. The caller email also drives
+    # each share's rating.myRating below.
+    email = get_caller_email(event)
 
     params = get_query_params(event)
     direction = params.get("direction")
@@ -68,5 +70,10 @@ def handler(event: dict, context: Any) -> dict:
 
     # Newest first -- most useful default for a browse UI.
     shares.sort(key=lambda s: s.get("messageDate", 0), reverse=True)
+
+    # Attach each share's trackKey + rating {avg, count, myRating} so the feed
+    # renders whole-group ratings without N extra calls (batch-loaded for the
+    # page's unique tracks).
+    enrich_shares_with_ratings(shares, email)
 
     return success_response({"shares": shares, "direction": direction, "window": window, "count": len(shares)})

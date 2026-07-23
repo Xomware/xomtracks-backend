@@ -148,6 +148,24 @@ class LinkPhoneRequest(BaseModel):
         return v.strip()
 
 
+class SetRatingRequest(BaseModel):
+    """
+    POST /ratings/set -- the caller rates a SONG 1-5 (whole-group rating; any
+    logged-in Cognito user may rate). `trackKey` is the normalized song identity
+    the frontend received on a share (share.trackKey) or from GET /ratings/get.
+    """
+
+    trackKey: str = Field(min_length=1)
+    rating: int = Field(ge=1, le=5)
+
+    @field_validator("trackKey")
+    @classmethod
+    def track_key_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("trackKey must not be blank")
+        return v.strip()
+
+
 class CreatePlaylistRequest(BaseModel):
     """
     POST /playlists/create -- on-the-spot playlist build from a hand-picked
