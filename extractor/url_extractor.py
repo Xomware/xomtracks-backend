@@ -43,6 +43,21 @@ _URL_PATTERN = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+", re
 # real URL characters (e.g. a `)` closing "(check this out: URL)").
 _TRAILING_JUNK = ").,;:!?]}’”"
 
+# Legacy typedstream archives store the link-preview URL as a
+# length-prefixed NSString and immediately follow it -- with NO null
+# separator -- by the archived link-attribute class token, whose leading
+# bytes are the ASCII run `WHttpURL/`. Every one of those characters is
+# URL-legal, so the raw-byte fallback regex (which has no length info to
+# stop at) runs straight past the real end of the URL and swallows the
+# token. Left unstripped, the recovered URL differs from the byte-identical
+# copy in the message's `text` column, so the SAME link produced TWO shares
+# with two different deterministic shareIds -- this is what doubled every
+# link-preview share in production. We strip the marker only on the
+# raw-byte typedstream path (the bplist and plain-text paths recover clean
+# URLs and never see it). Anchored at end-of-string and requiring the full
+# `Http(s)URL` token keeps this from ever touching a genuine URL.
+_TYPEDSTREAM_URL_TAIL = re.compile(r"W?Https?URL/?$")
+
 
 def detect_platform(url: str) -> str | None:
     """Return 'spotify' | 'soundcloud' | 'apple', or None if unsupported."""
@@ -106,9 +121,12 @@ def _extract_urls_from_bplist(blob: bytes) -> list[str] | None:
 
 def _extract_urls_from_raw_bytes(blob: bytes) -> list[str]:
     """Fallback for legacy typedstream blobs: decode permissively and regex
-    the whole thing. The URL's ASCII run survives even amid binary noise."""
+    the whole thing. The URL's ASCII run survives even amid binary noise --
+    but the archived class token glued onto its tail (see
+    _TYPEDSTREAM_URL_TAIL) must be stripped so the recovered URL matches the
+    plain-text copy byte-for-byte and doesn't dedup into a second share."""
     text = blob.decode("utf-8", errors="ignore")
-    return _URL_PATTERN.findall(text)
+    return [_TYPEDSTREAM_URL_TAIL.sub("", url) for url in _URL_PATTERN.findall(text)]
 
 
 def extract_urls_from_attributed_body(blob: bytes | None) -> list[str]:

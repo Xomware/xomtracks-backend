@@ -51,11 +51,13 @@ requirements explicitly call for. See `chat_reader.py` and
 | File | Responsibility |
 |------|-----------------|
 | `chat_reader.py` | Opens `chat.db` read-only; `fetch_new_messages()` scans ALL conversations since a `ROWID` watermark; Apple-epoch -> Unix conversion. |
-| `url_extractor.py` | Regexes music URLs out of `text` AND `attributedBody` (bplist NSKeyedArchiver parse + legacy-typedstream byte-regex fallback); platform detection. |
-| `share_builder.py` | Turns one chat_reader row into zero or more `POST /shares/ingest` body dicts (direction/sharerHandle mapping, one dict per distinct URL). |
+| `url_extractor.py` | Regexes music URLs out of `text` AND `attributedBody` (bplist NSKeyedArchiver parse + legacy-typedstream byte-regex fallback); platform detection; strips the `WHttpURL/` typedstream tail so the two copies of a link dedup. |
+| `share_builder.py` | Turns one chat_reader row into zero or more `POST /shares/ingest` body dicts (direction/sharerHandle mapping, one dict per distinct URL; resolves `sharerName` for incoming shares). |
+| `contacts.py` | Read-only resolver: iMessage handle (phone/email) -> macOS Contacts display name, digit-normalized. Runs on Dom's Mac (Full Disk Access, same as chat.db). |
+| `backfill_names.py` | One-shot `python -m extractor.backfill_names`: fills `sharerName` on existing xomtracks-shares rows from local Contacts. |
 | `watermark.py` | Persists the last-processed `ROWID` to `~/.xomtracks/extractor_state.json`. |
 | `ingest_client.py` | POSTs one share to the backend with the scoped SSM bearer key; never reads anything back beyond the HTTP status. |
-| `run.py` | Orchestrates one scan (`run_once`) + CLI entrypoint (`main`). |
+| `run.py` | Orchestrates one scan (`run_once`) + CLI entrypoint (`main`); builds the Contacts resolver so live scans attach `sharerName`. |
 | `logging_setup.py` | Standalone logger (stdout + optional file), deliberately decoupled from `lambdas.common.logger`. |
 
 ## ROWID-based watermark (not date)
@@ -102,6 +104,34 @@ given. **Not runnable in this agent's sandboxed shell** -- reading
 `chat.db` requires Full Disk Access, which is granted to `Terminal.app` on
 this login but not to this tool's subprocess. Run it from an actual
 Terminal window instead.
+
+## Contact-name resolution + one-time backfill
+
+Sharers were showing as raw phone numbers because the extractor stored only
+`sharerHandle`. `contacts.py` resolves each handle against the local macOS
+Contacts DBs (`~/Library/Application Support/AddressBook/**/AddressBook-v22.abcddb`,
+Full-Disk-Access gated -- **local to Dom's Mac only**) and `run.py` now
+attaches `sharerName` on every new scan.
+
+Existing rows need a one-time backfill. It **must run from a real Terminal
+on Dom's Mac** (Contacts is local + FDA-gated; a cloud/CI/agent host can't
+read it) and needs AWS credentials on the host (it `UpdateItem`s
+`xomtracks-shares` directly -- `/shares/ingest` is a conditional put and
+would no-op existing rows). Preview first, then apply:
+
+```bash
+cd xomtracks-backend
+source .venv/bin/activate
+
+# dry run -- shows how many rows would get a name, writes nothing
+python -m extractor.backfill_names --dry-run
+
+# apply
+python -m extractor.backfill_names
+```
+
+`--force` overwrites names already set; `--table`/`--region` override the
+defaults (`xomtracks-shares` / `us-east-1`).
 
 ## Deployment (NOT done yet -- explicitly out of scope for this pass)
 
