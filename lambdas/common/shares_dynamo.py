@@ -162,6 +162,48 @@ def scan_shares_by_match_status(match_status: str) -> list[dict]:
         raise DynamoDBError(message=str(err), function="scan_shares_by_match_status", table=SHARES_TABLE_NAME)
 
 
+def scan_shares_by_normalized_handles(handles: set[str], since_epoch: int = 0) -> list[dict]:
+    """
+    Return every share whose sharerHandle NORMALIZES to one of the given
+    last-10-digit handles, with messageDate >= since_epoch.
+
+    Powers "my shares" for a linked member and the matched-count reported on
+    link. sharerHandle is stored RAW (E.164, e.g. "+13364042196") while linked
+    handles are normalized (last-10 digits, see phone.normalize_phone), so a
+    GSI-2 lookup on the raw value can't be keyed by the normalized form -- we
+    scan and normalize each row's handle in Python. A filtered Scan is fine at
+    friend-group scale (same rationale as scan_shares_by_match_status); a
+    normalized-handle GSI is a fast-follow if volume grows.
+    """
+    from lambdas.common.phone import normalize_phone
+
+    wanted = {h for h in handles if h}
+    if not wanted:
+        return []
+
+    try:
+        table = dynamodb.Table(SHARES_TABLE_NAME)
+        items: list[dict] = []
+        kwargs = {
+            "FilterExpression": Attr("sharerHandle").exists() & Attr("messageDate").gte(since_epoch),
+        }
+        while True:
+            res = table.scan(**kwargs)
+            for item in res.get("Items", []):
+                if normalize_phone(item.get("sharerHandle")) in wanted:
+                    items.append(item)
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
+    except Exception as err:
+        log.error(f"Scan shares by normalized handles failed: {err}")
+        raise DynamoDBError(
+            message=str(err), function="scan_shares_by_normalized_handles", table=SHARES_TABLE_NAME
+        )
+
+
 def query_shares_by_direction(direction: str, since_epoch: int) -> list[dict]:
     """
     Query all shares in a direction ('in' | 'out') with messageDate >=

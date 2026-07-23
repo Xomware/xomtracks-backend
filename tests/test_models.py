@@ -10,6 +10,7 @@ from lambdas.common.models import (
     Share,
     ShareIngestRequest,
     MatchOverrideRequest,
+    LinkPhoneRequest,
 )
 
 
@@ -124,3 +125,17 @@ class TestMatchOverrideRequest:
     def test_blank_rejected(self):
         with pytest.raises(PydanticValidationError):
             MatchOverrideRequest(spotifyTrackId="   ")
+
+
+class TestLinkPhoneRequest:
+    def test_valid_payload(self):
+        req = LinkPhoneRequest(phoneNumber="+1 (336) 404-2196")
+        assert req.phoneNumber == "+1 (336) 404-2196"
+
+    def test_blank_rejected(self):
+        with pytest.raises(PydanticValidationError):
+            LinkPhoneRequest(phoneNumber="   ")
+
+    def test_no_digits_rejected(self):
+        with pytest.raises(PydanticValidationError):
+            LinkPhoneRequest(phoneNumber="not a number")

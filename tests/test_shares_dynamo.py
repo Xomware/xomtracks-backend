@@ -196,6 +196,47 @@ class TestScanByMatchStatus:
         assert scan_shares_by_match_status("pending") == []
 
 
+class TestScanByNormalizedHandles:
+    """Powers "my shares" for a linked member + the matched-count on link.
+    sharerHandle is stored raw (E.164); linked handles are last-10-digit
+    normalized -- so we scan and normalize each row's handle in Python."""
+
+    def _seed(self, put_share_idempotent, sample_share):
+        # Two shares from the same member in two different raw formats, one
+        # from someone else.
+        a = dict(sample_share)
+        a.update({"shareId": "sa", "messageGuid": "ga", "sourceUrl": "ua",
+                  "sharerHandle": "+13364042196", "messageDate": 2000})
+        b = dict(sample_share)
+        b.update({"shareId": "sb", "messageGuid": "gb", "sourceUrl": "ub",
+                  "sharerHandle": "(336) 404-2196", "messageDate": 3000})
+        c = dict(sample_share)
+        c.update({"shareId": "sc", "messageGuid": "gc", "sourceUrl": "uc",
+                  "sharerHandle": "+19998887777", "messageDate": 4000})
+        for s in (a, b, c):
+            put_share_idempotent(s)
+
+    def test_matches_across_formats(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import put_share_idempotent, scan_shares_by_normalized_handles
+
+        self._seed(put_share_idempotent, sample_share)
+        results = scan_shares_by_normalized_handles({"3364042196"})
+        assert {r["shareId"] for r in results} == {"sa", "sb"}
+
+    def test_since_epoch_filters(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import put_share_idempotent, scan_shares_by_normalized_handles
+
+        self._seed(put_share_idempotent, sample_share)
+        results = scan_shares_by_normalized_handles({"3364042196"}, since_epoch=2500)
+        assert {r["shareId"] for r in results} == {"sb"}
+
+    def test_empty_handles_returns_empty(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import put_share_idempotent, scan_shares_by_normalized_handles
+
+        self._seed(put_share_idempotent, sample_share)
+        assert scan_shares_by_normalized_handles(set()) == []
+
+
 class TestQueryBySharer:
     """GSI-2 -- reserved for the by-sharer fast-follow, but the table +
     query function exist now (cheap, per PLAN.md)."""

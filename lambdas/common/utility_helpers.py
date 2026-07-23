@@ -242,6 +242,24 @@ def get_caller_email(event: dict) -> str:
     raise MissingCallerIdentityError(field="email")
 
 
+def get_caller_sub(event: dict) -> Optional[str]:
+    """
+    Resolve the caller's Cognito `sub` (stable user id) from the authorizer
+    claims, or None if absent. Unlike get_caller_email this does NOT raise --
+    the sub is stored alongside the email on the user-link row as a durable,
+    rename-proof identifier, but email is the record key and the required
+    identity. Callers that need identity should still use get_caller_email.
+    """
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") if isinstance(request_context, dict) else None
+    claims = authorizer.get("claims") if isinstance(authorizer, dict) else None
+    if isinstance(claims, dict):
+        sub = claims.get("sub")
+        if isinstance(sub, str) and sub:
+            return sub
+    return None
+
+
 def require_ingest_bearer_key(event: dict, expected_key: str) -> None:
     """
     Validate the extractor's scoped bearer key on POST /shares/ingest.

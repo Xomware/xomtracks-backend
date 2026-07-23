@@ -126,6 +126,28 @@ class MatchOverrideRequest(BaseModel):
         return extract_spotify_track_id(v.strip())
 
 
+class LinkPhoneRequest(BaseModel):
+    """
+    POST /me/link-phone -- a signed-in group member links their phone number
+    to their Cognito identity so they can see + be attributed for their own
+    shares. Accepts any human phone format; the handler normalizes to last-10
+    digits (see phone.normalize_phone). We keep the raw string here and only
+    require that it contains at least one digit -- normalization/validation of
+    the digit count happens in the handler.
+    """
+
+    phoneNumber: str = Field(min_length=1)
+
+    @field_validator("phoneNumber")
+    @classmethod
+    def has_digits(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("phoneNumber must not be blank")
+        if not any(ch.isdigit() for ch in v):
+            raise ValueError("phoneNumber must contain digits")
+        return v.strip()
+
+
 class CreatePlaylistRequest(BaseModel):
     """
     POST /playlists/create -- on-the-spot playlist build from a hand-picked
