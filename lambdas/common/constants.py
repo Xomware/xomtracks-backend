@@ -63,6 +63,38 @@ MATCH_STATUSES = ('pending', 'matched', 'unmatched', 'manual')
 MATCH_CONFIDENCE_THRESHOLD = float(os.environ.get('MATCH_CONFIDENCE_THRESHOLD', '0.80'))
 
 # ============================================
+# Playlists
+# ============================================
+# Rolling "last 30 days" playlist ids are runtime-managed by the
+# rolling-playlists cron and persisted in SSM (not the users row) -- see
+# xomtracks-infrastructure ssm.tf. Values start as the "unset" placeholder;
+# the cron creates each playlist on first run and PutParameters the id back.
+PLAYLISTS_SSM_ROOT = f'/{PRODUCT}/playlists/'
+ROLLING_IN_PLAYLIST_PARAM = os.environ.get(
+    'ROLLING_IN_PLAYLIST_PARAM', f'{PLAYLISTS_SSM_ROOT}ROLLING_IN_PLAYLIST_ID'
+)
+ROLLING_OUT_PLAYLIST_PARAM = os.environ.get(
+    'ROLLING_OUT_PLAYLIST_PARAM', f'{PLAYLISTS_SSM_ROOT}ROLLING_OUT_PLAYLIST_ID'
+)
+# Non-empty placeholder written by Terraform (a real empty string trips SSM
+# validation) -- treated as "no playlist created yet" by the cron.
+PLAYLIST_ID_UNSET = 'unset'
+
+# Trailing window (days) for both rolling playlists.
+ROLLING_WINDOW_DAYS = int(os.environ.get('ROLLING_WINDOW_DAYS', '30'))
+
+# Playlist names, keyed by share direction ('in' = shared with Dom,
+# 'out' = shared by Dom). Public on Dom's profile.
+ROLLING_PLAYLIST_NAMES = {
+    'in': 'Xomtracks — Shared With Me (Last Month)',
+    'out': 'Xomtracks — Shared By Me (Last Month)',
+}
+
+# Match statuses whose shares carry a real resolvedSpotifyUri and are thus
+# eligible for playlists (pending/unmatched never are).
+PLAYABLE_MATCH_STATUSES = ('matched', 'manual')
+
+# ============================================
 # Misc
 # ============================================
 XOMTRACKS_URL = "https://xomtracks.xomware.com"
