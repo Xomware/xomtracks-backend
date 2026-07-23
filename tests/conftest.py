@@ -19,6 +19,7 @@ _TEST_ENV_VARS = {
     "SHARES_SHARER_INDEX": "sharerHandle-messageDate-index",
     "USERS_TABLE_NAME": "xomtracks-users-test",
     "APP_SERVICE_USER_EMAIL": "app@xomtracks.xomware.com",
+    "RATINGS_TABLE_NAME": "xomtracks-ratings-test",
 }
 for key, value in _TEST_ENV_VARS.items():
     os.environ.setdefault(key, value)

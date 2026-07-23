@@ -43,6 +43,12 @@ SHARES_SHARER_INDEX = os.environ.get('SHARES_SHARER_INDEX', 'sharerHandle-messag
 USERS_TABLE_NAME = os.environ.get('USERS_TABLE_NAME', '')
 APP_SERVICE_USER_EMAIL = os.environ.get('APP_SERVICE_USER_EMAIL', '')
 
+# xomtracks-ratings: whole-group song ratings keyed per (track, user).
+# PK trackKey (normalized SONG identity, see track_key.derive_track_key),
+# SK raterEmail (Cognito). One rating per user per song; aggregate {avg,count}
+# computed by querying the trackKey partition. See ratings_dynamo.py.
+RATINGS_TABLE_NAME = os.environ.get('RATINGS_TABLE_NAME', '')
+
 # ============================================
 # Auth
 # ============================================

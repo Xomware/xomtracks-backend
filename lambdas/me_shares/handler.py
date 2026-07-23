@@ -21,6 +21,7 @@ from typing import Any
 
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
+from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import scan_shares_by_normalized_handles
 from lambdas.common.user_links import get_linked_handles
 from lambdas.common.utility_helpers import get_caller_email, get_query_params, success_response
@@ -75,6 +76,10 @@ def handler(event: dict, context: Any) -> dict:
     since_epoch = _since_epoch_for_window(window)
     shares = scan_shares_by_normalized_handles(handles, since_epoch)
     shares.sort(key=lambda s: s.get("messageDate", 0), reverse=True)
+
+    # Same rating enrichment as the main feed so the "Mine" tab shows each
+    # song's whole-group aggregate + the caller's own rating inline.
+    enrich_shares_with_ratings(shares, email)
 
     return success_response({
         "shares": shares,
