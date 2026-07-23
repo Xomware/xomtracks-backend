@@ -147,6 +147,18 @@ class Spotify:
         self.access_token = await self.aiohttp_get_app_access_token()
         self.headers = self._auth_headers(self.access_token)
 
+    async def aiohttp_initialize_user_token(self) -> None:
+        """
+        Fetch a USER access token (refresh-token flow) and populate
+        self.headers for the async playlist endpoints. Call once after
+        constructing with a real user row + an aiohttp session (mirrors
+        aiohttp_initialize_app_token, but for the user-scoped flow the
+        playlist writes + cover upload require). Also persists a rotated
+        refresh token when Spotify returns one (see aiohttp_get_access_token).
+        """
+        self.access_token = await self.aiohttp_get_access_token()
+        self.headers = self._auth_headers(self.access_token)
+
     def get_access_token(self) -> str:
         """Get access token using refresh token (synchronous)."""
         try:

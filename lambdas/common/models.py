@@ -124,3 +124,41 @@ class MatchOverrideRequest(BaseModel):
         if not v.strip():
             raise ValueError("spotifyTrackId must not be blank")
         return extract_spotify_track_id(v.strip())
+
+
+class CreatePlaylistRequest(BaseModel):
+    """
+    POST /playlists/create -- on-the-spot playlist build from a hand-picked
+    selection. The feed's multi-select "make a playlist from history" action
+    calls this with a list of shareIds (resolved to their Spotify URIs
+    server-side) and/or raw Spotify trackIds, plus a name.
+
+    At least one of shareIds/trackIds must be non-empty -- an empty playlist
+    request is a client bug, not a valid create.
+    """
+
+    name: str = Field(min_length=1, max_length=100)
+    shareIds: list[str] = Field(default_factory=list)
+    trackIds: list[str] = Field(default_factory=list)
+    description: str | None = Field(default=None, max_length=300)
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("name must not be blank")
+        return v.strip()
+
+    @field_validator("trackIds")
+    @classmethod
+    def normalize_track_ids(cls, v: list[str]) -> list[str]:
+        # Accept bare ids, full URLs, or URIs -- normalize each to a bare id.
+        return [extract_spotify_track_id(t.strip()) for t in v if t and t.strip()]
+
+    @field_validator("shareIds")
+    @classmethod
+    def strip_share_ids(cls, v: list[str]) -> list[str]:
+        return [s.strip() for s in v if s and s.strip()]
+
+    def has_selection(self) -> bool:
+        return bool(self.shareIds or self.trackIds)

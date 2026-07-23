@@ -222,13 +222,27 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           FOLDER="${{ matrix.lambda }}"
-          DOMAIN="${FOLDER%%_*}"
-          REST="${FOLDER#*_}"
-          if [ "$DOMAIN" == "$REST" ]; then
-            FUNCTION_NAME="xomtracks-${FOLDER}"
-          else
-            FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
-          fi
+          # Cron Lambdas are named `xomtracks-cron-<hyphenated-name>` in
+          # Terraform (lambdas_cron.tf), which the first-underscore split
+          # below cannot reproduce (it would emit `xomtracks-cron-<under_score>`
+          # / the wrong domain). Map the cron folders explicitly; everything
+          # else keeps the established first-underscore rule (which correctly
+          # preserves the second underscore in e.g. shares_match_override ->
+          # xomtracks-shares-match_override).
+          case "$FOLDER" in
+            cron_rolling_playlists) FUNCTION_NAME="xomtracks-cron-rolling-playlists" ;;
+            cron_token_keepalive)   FUNCTION_NAME="xomtracks-cron-token-keepalive" ;;
+            matching_sweep)         FUNCTION_NAME="xomtracks-cron-matching-sweep" ;;
+            *)
+              DOMAIN="${FOLDER%%_*}"
+              REST="${FOLDER#*_}"
+              if [ "$DOMAIN" == "$REST" ]; then
+                FUNCTION_NAME="xomtracks-${FOLDER}"
+              else
+                FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
+              fi
+              ;;
+          esac
 
           echo "Updating layer and runtime for $FUNCTION_NAME"
           aws lambda update-function-configuration \
@@ -275,12 +289,36 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           FOLDER="${{ matrix.lambda }}"
-          DOMAIN="${FOLDER%%_*}"
-          REST="${FOLDER#*_}"
-          if [ "$DOMAIN" == "$REST" ]; then
-            FUNCTION_NAME="xomtracks-${FOLDER}"
-          else
-            FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
+          # Cron Lambdas are named `xomtracks-cron-<hyphenated-name>` in
+          # Terraform (lambdas_cron.tf), which the first-underscore split
+          # below cannot reproduce (it would emit `xomtracks-cron-<under_score>`
+          # / the wrong domain). Map the cron folders explicitly; everything
+          # else keeps the established first-underscore rule (which correctly
+          # preserves the second underscore in e.g. shares_match_override ->
+          # xomtracks-shares-match_override).
+          case "$FOLDER" in
+            cron_rolling_playlists) FUNCTION_NAME="xomtracks-cron-rolling-playlists" ;;
+            cron_token_keepalive)   FUNCTION_NAME="xomtracks-cron-token-keepalive" ;;
+            matching_sweep)         FUNCTION_NAME="xomtracks-cron-matching-sweep" ;;
+            *)
+              DOMAIN="${FOLDER%%_*}"
+              REST="${FOLDER#*_}"
+              if [ "$DOMAIN" == "$REST" ]; then
+                FUNCTION_NAME="xomtracks-${FOLDER}"
+              else
+                FUNCTION_NAME="xomtracks-${DOMAIN}-${REST}"
+              fi
+              ;;
+          esac
+
+          # A handler folder can be merged BEFORE its Terraform-provisioned
+          # function exists (e.g. the on-the-spot playlists-create endpoint,
+          # whose Lambda + API route land in a separate infra apply). Skip --
+          # not fail -- the code deploy until the function is provisioned, so
+          # CI stays green and the next push picks it up automatically.
+          if ! aws lambda get-function --function-name "$FUNCTION_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Function $FUNCTION_NAME not provisioned yet -- skipping code deploy"
+            exit 0
           fi
 
           echo "Deploying code for $FUNCTION_NAME"

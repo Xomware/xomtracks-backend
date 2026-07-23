@@ -34,6 +34,40 @@ def _get_ssm_param(name: str) -> str:
     return _ssm_cache[name]
 
 
+def get_ssm_param(name: str) -> str:
+    """
+    Fetch an arbitrary SSM parameter (decrypted, cached) by full name.
+
+    Used for runtime-managed, non-fixed parameters -- e.g. the rolling
+    playlist ids the rolling-playlists cron reads/writes, whose names aren't
+    in the fixed __getattr__ map.
+    """
+    return _get_ssm_param(name)
+
+
+def put_ssm_param(name: str, value: str, secure: bool = True) -> None:
+    """
+    Write an SSM parameter (SecureString by default), overwriting in place,
+    and refresh the local cache so a subsequent get in the same process
+    returns the new value.
+
+    The cron IAM role scopes ssm:PutParameter to exactly the two rolling
+    playlist-id params (see xomtracks-infrastructure iam_lambda.tf).
+    """
+    try:
+        ssm = boto3.client("ssm")
+        ssm.put_parameter(
+            Name=name,
+            Value=value,
+            Type="SecureString" if secure else "String",
+            Overwrite=True,
+        )
+        _ssm_cache[name] = value
+    except Exception as err:
+        log.error(f"Failed to put SSM parameter '{name}': {err}")
+        raise RuntimeError(f"SSM parameter '{name}' could not be written: {err}") from err
+
+
 def __getattr__(name: str) -> str:
     """Module-level __getattr__ for lazy SSM parameter access."""
     param_map = {
