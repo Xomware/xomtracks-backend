@@ -58,6 +58,32 @@ def _track_title_artist(track: dict) -> tuple[str, str]:
     return title, artist
 
 
+def album_art_url(track: dict) -> str | None:
+    """
+    Pick a card-sized cover URL from a Spotify track's album images.
+
+    Spotify returns album images largest-first (typically 640 / 300 / 64).
+    The browse feed renders covers at ~250px, so the middle (~300px) image
+    is the right tradeoff between crispness and bytes; fall back to the
+    first (largest) when only one size exists, and None when a track has no
+    album images at all (rare, but real -- degrade to no cover, not a crash).
+    """
+    images = ((track.get("album") or {}).get("images")) or []
+    if not images:
+        return None
+    chosen = images[1] if len(images) > 1 else images[0]
+    return chosen.get("url")
+
+
+def _album_fields(track: dict) -> dict:
+    """Album cover + name persisted on the share so the feed needs no
+    client-side Spotify calls to render a card."""
+    return {
+        "albumArtUrl": album_art_url(track),
+        "albumName": (track.get("album") or {}).get("name"),
+    }
+
+
 def _spotify_result(track: dict, match_status: str, confidence: float | None) -> dict:
     title, artist = _track_title_artist(track)
     return {
@@ -67,6 +93,7 @@ def _spotify_result(track: dict, match_status: str, confidence: float | None) ->
         "resolvedSpotifyUri": track.get("uri"),
         "trackTitle": title,
         "trackArtist": artist,
+        **_album_fields(track),
     }
 
 
@@ -78,6 +105,8 @@ def _unmatched_result() -> dict:
         "resolvedSpotifyUri": None,
         "trackTitle": None,
         "trackArtist": None,
+        "albumArtUrl": None,
+        "albumName": None,
     }
 
 

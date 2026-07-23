@@ -49,6 +49,14 @@ def _spotify_track(track_id="abc123", name="Song Name", artist="Artist Name"):
         "name": name,
         "artists": [{"name": artist}],
         "uri": f"spotify:track:{track_id}",
+        "album": {
+            "name": "Album Name",
+            "images": [
+                {"url": "https://i.scdn.co/image/large", "height": 640, "width": 640},
+                {"url": "https://i.scdn.co/image/medium", "height": 300, "width": 300},
+                {"url": "https://i.scdn.co/image/small", "height": 64, "width": 64},
+            ],
+        },
     }
 
 
@@ -100,6 +108,33 @@ class TestMatchShareSpotifyBranch:
         assert result["resolvedSpotifyUri"] == "spotify:track:abc123"
         assert result["trackTitle"] == "Song"
         assert result["trackArtist"] == "Artist"
+        # Album art + name are persisted so the browse feed can render covers
+        # without any client-side Spotify calls. The ~300px (medium) image is
+        # chosen for card display, not the 640px original.
+        assert result["albumName"] == "Album Name"
+        assert result["albumArtUrl"] == "https://i.scdn.co/image/medium"
+
+    @pytest.mark.asyncio
+    async def test_unmatched_has_null_album_fields(self):
+        share = {"platform": "spotify", "sourceUrl": "https://open.spotify.com/track/gone"}
+        spotify = FakeSpotify(track_by_id={})
+
+        result = await match_share(share, spotify)
+
+        assert result["albumArtUrl"] is None
+        assert result["albumName"] is None
+
+    @pytest.mark.asyncio
+    async def test_track_without_album_images_degrades_to_null_art(self):
+        share = {"platform": "spotify", "sourceUrl": "https://open.spotify.com/track/noart"}
+        track = {"id": "noart", "name": "S", "artists": [{"name": "A"}], "uri": "spotify:track:noart"}
+        spotify = FakeSpotify(track_by_id={"noart": track})
+
+        result = await match_share(share, spotify)
+
+        assert result["matchStatus"] == "matched"
+        assert result["albumArtUrl"] is None
+        assert result["albumName"] is None
 
     @pytest.mark.asyncio
     async def test_track_not_found_is_unmatched(self):

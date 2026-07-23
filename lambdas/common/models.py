@@ -67,6 +67,8 @@ class Share(BaseModel):
     messageDate: int
     trackTitle: str | None = None
     trackArtist: str | None = None
+    albumName: str | None = None
+    albumArtUrl: str | None = None
     resolvedSpotifyId: str | None = None
     resolvedSpotifyUri: str | None = None
     matchStatus: str = "pending"
