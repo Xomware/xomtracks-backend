@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from lambdas.common.errors import ValidationError, handle_errors
+from lambdas.common.genres import ensure_genres
 from lambdas.common.logger import get_logger
 from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import scan_shares_by_normalized_handles
@@ -80,6 +81,10 @@ def handler(event: dict, context: Any) -> dict:
     # Same rating enrichment as the main feed so the "Mine" tab shows each
     # song's whole-group aggregate + the caller's own rating inline.
     enrich_shares_with_ratings(shares, email)
+
+    # Same genres guarantee as the main feed so the "Mine" tab filter reads a
+    # string[] on every share (see shares_list).
+    ensure_genres(shares)
 
     return success_response({
         "shares": shares,

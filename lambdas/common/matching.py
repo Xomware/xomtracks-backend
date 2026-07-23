@@ -84,9 +84,14 @@ def _album_fields(track: dict) -> dict:
     }
 
 
-def _spotify_result(track: dict, match_status: str, confidence: float | None) -> dict:
+def _spotify_result(
+    track: dict,
+    match_status: str,
+    confidence: float | None,
+    genres: list[str] | None = None,
+) -> dict:
     title, artist = _track_title_artist(track)
-    return {
+    result = {
         "matchStatus": match_status,
         "matchConfidence": confidence,
         "resolvedSpotifyId": track.get("id"),
@@ -95,16 +100,35 @@ def _spotify_result(track: dict, match_status: str, confidence: float | None) ->
         "trackArtist": artist,
         **_album_fields(track),
     }
+    # Only attach `genres` when the caller actually resolved them. Omitting
+    # the key (rather than persisting `[]`) is deliberate: it lets the genre
+    # backfill distinguish "never enriched" (key absent) from "enriched, no
+    # genres found" (key present as []), so a freshly-matched share written
+    # by the sweep -- which does NOT fetch artist genres -- is still picked
+    # up by genre_backfill on its next run.
+    if genres is not None:
+        result["genres"] = list(genres)
+    return result
 
 
-def _unmatched_result() -> dict:
+def _unmatched_result(title: str | None = None, artist: str | None = None) -> dict:
+    """
+    Fields for a share that resolves to NO Spotify track.
+
+    title/artist default to None (Spotify-URL branch: a bad/removed id has no
+    recoverable metadata). The SoundCloud/Apple branches pass the resolved
+    source title/artist through so an unmatched share still shows its REAL
+    name in the feed -- a SoundCloud-only track that was never released to
+    Spotify renders as e.g. "Artist — Track" instead of "Untitled", even
+    though it has no resolvedSpotifyId and is excluded from playlists.
+    """
     return {
         "matchStatus": "unmatched",
         "matchConfidence": None,
         "resolvedSpotifyId": None,
         "resolvedSpotifyUri": None,
-        "trackTitle": None,
-        "trackArtist": None,
+        "trackTitle": title,
+        "trackArtist": artist,
         "albumArtUrl": None,
         "albumName": None,
     }
@@ -295,7 +319,9 @@ async def _match_via_resolver(url: str, spotify, resolver, threshold: float, pla
 
     best, score = fuzzy_best_match(title, artist, candidates)
     if not best or score < threshold:
-        return _unmatched_result()
+        # Preserve the resolved SoundCloud/Apple title+artist even though the
+        # track isn't on Spotify -- the feed shows its real name, not "Untitled".
+        return _unmatched_result(title=title, artist=artist)
 
     return _spotify_result(best, "matched", round(score, 4))
 

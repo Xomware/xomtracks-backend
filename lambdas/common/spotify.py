@@ -267,6 +267,41 @@ class Spotify:
         return tracks
 
     # ------------------------
+    # Batch artist hydrate (genre enrichment -- NEW, not in xomify's copy)
+    # ------------------------
+    # Spotify TRACK objects carry no genres; ARTIST objects do. The genre
+    # filter (and its backfill) hydrates the primary artists of matched
+    # tracks through GET /v1/artists?ids= (also capped at 50 ids/call) to
+    # read each artist's `genres`. Read-only public catalog data -> the same
+    # app token the matcher already uses; no user scope required.
+    def get_artists_by_ids(self, artist_ids: list) -> list:
+        """
+        Batch-hydrate full artist objects from bare Spotify artist IDs.
+
+        Uses `GET /v1/artists?ids=` (synchronous). Spotify caps the call at
+        50 ids, so we chunk transparently and concatenate. Missing/None
+        entries in Spotify's response are dropped so callers always get real
+        objects.
+        """
+        clean_ids = [i for i in (artist_ids or []) if i]
+        if not clean_ids:
+            return []
+
+        artists: list = []
+        for start in range(0, len(clean_ids), self._BATCH_LIMIT):
+            chunk = clean_ids[start:start + self._BATCH_LIMIT]
+            url = f"{self.BASE_URL}/artists?ids={','.join(chunk)}"
+
+            response = requests.get(url, headers=self.headers)
+            if response.status_code != 200:
+                raise Exception(f"Batch get artists failed ({response.status_code}): {response.text}")
+
+            data = response.json()
+            artists.extend([a for a in (data.get('artists') or []) if a])
+
+        return artists
+
+    # ------------------------
     # Single-track hydrate (Spotify-URL resolver branch, matching.py)
     # ------------------------
     async def aiohttp_get_track(self, track_id: str) -> dict | None:

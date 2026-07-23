@@ -154,6 +154,65 @@ class TestBatchGetTracks:
         assert spotify.get_tracks_by_ids(None) == []
 
 
+class TestBatchGetArtists:
+    def test_chunks_over_50_and_filters_none(self, user):
+        from lambdas.common.spotify import Spotify
+        import requests
+
+        spotify = Spotify.__new__(Spotify)
+        spotify.headers = {"Authorization": "Bearer AT1"}
+
+        ids = [f"art{i}" for i in range(75)]
+        call_log = []
+
+        class FakeSyncResponse:
+            def __init__(self, ids_chunk):
+                self.status_code = 200
+                self._ids_chunk = ids_chunk
+
+            def json(self):
+                return {"artists": [
+                    {"id": i, "genres": ["rock"]} if i != "art5" else None
+                    for i in self._ids_chunk
+                ]}
+
+        def fake_get(url, headers=None):
+            requested = url.split("ids=")[1].split(",")
+            call_log.append(requested)
+            return FakeSyncResponse(requested)
+
+        with patch.object(requests, "get", side_effect=fake_get):
+            artists = spotify.get_artists_by_ids(ids)
+
+        assert len(call_log) == 2
+        assert len(call_log[0]) == 50
+        assert len(call_log[1]) == 25
+        assert all(a["id"] != "art5" for a in artists)
+
+    def test_empty_ids_returns_empty_list(self, user):
+        from lambdas.common.spotify import Spotify
+
+        spotify = Spotify.__new__(Spotify)
+        spotify.headers = {}
+        assert spotify.get_artists_by_ids([]) == []
+        assert spotify.get_artists_by_ids(None) == []
+
+    def test_non_200_raises(self, user):
+        from lambdas.common.spotify import Spotify
+        import requests
+
+        spotify = Spotify.__new__(Spotify)
+        spotify.headers = {"Authorization": "Bearer AT1"}
+
+        class FakeSyncResponse:
+            status_code = 429
+            text = "rate limited"
+
+        with patch.object(requests, "get", return_value=FakeSyncResponse()):
+            with pytest.raises(Exception, match="429"):
+                spotify.get_artists_by_ids(["art1"])
+
+
 class TestAiohttpGetTrack:
     @pytest.mark.asyncio
     async def test_fetches_single_track(self, user):

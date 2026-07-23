@@ -110,6 +110,15 @@ class TestShare:
         share = Share(**sample_share)
         assert share.matchConfidence is None
 
+    def test_genres_defaults_to_empty_list(self, sample_share):
+        share = Share(**sample_share)
+        assert share.genres == []
+
+    def test_genres_accepts_string_list(self, sample_share):
+        sample_share["genres"] = ["indie rock", "art pop"]
+        share = Share(**sample_share)
+        assert share.genres == ["indie rock", "art pop"]
+
 
 class TestMatchOverrideRequest:
     def test_valid_payload(self):
