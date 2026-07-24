@@ -56,7 +56,7 @@ requirements explicitly call for. See `chat_reader.py` and
 | `contacts.py` | Read-only resolver: iMessage handle (phone/email) -> macOS Contacts display name, digit-normalized. Runs on Dom's Mac (Full Disk Access, same as chat.db). |
 | `backfill_names.py` | One-shot `python -m extractor.backfill_names`: fills `sharerName` on existing xomtracks-shares rows from local Contacts. |
 | `watermark.py` | Persists the last-processed `ROWID` to `~/.xomtracks/extractor_state.json`. |
-| `ingest_client.py` | POSTs one share to the backend with the scoped SSM bearer key; never reads anything back beyond the HTTP status. |
+| `ingest_client.py` | POSTs one share to the backend with the ingest token (bearer); never reads anything back beyond the HTTP status. |
 | `run.py` | Orchestrates one scan (`run_once`) + CLI entrypoint (`main`); builds the Contacts resolver so live scans attach `sharerName`. |
 | `logging_setup.py` | Standalone logger (stdout + optional file), deliberately decoupled from `lambdas.common.logger`. |
 
@@ -81,6 +81,52 @@ message's** ROWID -- not the failed one. The next scan retries the failed
 message in full rather than silently skipping it. Ingest is idempotent
 server-side (keyed on `messageGuid` + `sourceUrl`), so retried pushes never
 create duplicate rows.
+
+## Ingest token (macOS Keychain — per-user auth)
+
+The extractor authenticates to `POST /shares/ingest` with a **per-user ingest
+token** (self-serve foundation Phase 3). The token is opaque and revocable; the
+backend stores only its SHA-256 hash and resolves the presenting token to an
+`ownerId`, so each user's shares are stamped with the right owner.
+
+`run_scheduled.sh` reads the token from the **macOS Keychain** at runtime — NOT
+from AWS SSM. This is the change that makes the extractor shippable to other
+people: a new user needs no AWS account, no `aws` CLI, and no IAM — just their
+own token in their own login Keychain.
+
+**One-time setup for a new user:**
+
+1. Sign into Xomtracks and mint a token — `POST /ingest-tokens/create` returns
+   the plaintext token **exactly once** (copy it immediately; it is never
+   shown again).
+2. Store it in the login Keychain (paste the token in place of `<TOKEN>`):
+
+   ```bash
+   security add-generic-password \
+     -s "xomtracks-ingest" \
+     -a "$USER" \
+     -T /usr/bin/security \
+     -U \
+     -w "<TOKEN>"
+   ```
+
+   - `-s "xomtracks-ingest"` / `-a "$USER"` — the service/account
+     `run_scheduled.sh` looks up (`security find-generic-password -s
+     xomtracks-ingest -a "$USER" -w`).
+   - `-T /usr/bin/security` — trusts the `security` binary the script uses to
+     read it, so the launchd-run scan reads it without a GUI prompt.
+   - `-U` — updates the item in place if it already exists (re-provisioning /
+     token rotation).
+   - `-w "<TOKEN>"` — the secret value.
+
+To **rotate**: revoke the old token (`POST /ingest-tokens/revoke`), mint a new
+one, and re-run the `add-generic-password` command (with `-U`).
+
+**Legacy fallback (Dom only):** if no Keychain item exists, `run_scheduled.sh`
+falls back to `aws ssm get-parameter /xomtracks/ingest/BEARER_KEY`. The backend
+dual-accepts that legacy SSM key (mapping it to Dom's `ownerId`), so Dom's
+running job keeps working unchanged until he re-provisions onto a per-user token
+via the Keychain command above.
 
 ## Read-only, one-way
 

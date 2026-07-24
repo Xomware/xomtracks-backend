@@ -292,6 +292,11 @@ def require_ingest_bearer_key(event: dict, expected_key: str) -> None:
     Raises AuthorizationError (401) if missing or mismatched. Deliberately
     NOT the same code path as get_caller_email -- the extractor has no
     user identity, just a shared secret scoped to this one route.
+
+    LEGACY (Phase 3): superseded by resolve_ingest_owner, which additionally
+    resolves the OWNER of the ingest. Kept for back-compat / rollback; the
+    ingest handler now calls resolve_ingest_owner. Retired at the Phase 4
+    contract step.
     """
     from lambdas.common.errors import AuthorizationError
 
@@ -302,6 +307,52 @@ def require_ingest_bearer_key(event: dict, expected_key: str) -> None:
             handler="shares_ingest",
             function="require_ingest_bearer_key",
         )
+
+
+def resolve_ingest_owner(event: dict, legacy_key: str) -> str:
+    """
+    Resolve the OWNER (Cognito sub) that a POST /shares/ingest request
+    authenticates as -- the Phase 3 replacement for require_ingest_bearer_key.
+
+    Dual-accept, checked in this order:
+      1. LEGACY SSM bearer key -> DEFAULT_OWNER_ID (Dom). Checked FIRST (a
+         constant-time compare, no DB read) so Dom's running extractor keeps
+         working UNCHANGED and is immune to a tokens-table outage.
+      2. Per-user ingest token -> its ownerId (hash the presented bearer, look
+         it up; revoked/unknown -> no match).
+
+    Raises AuthorizationError (401) only if NEITHER matches. The stamped owner
+    flows straight into the share's ownerId / ownerDirection, closing the
+    multi-tenant loop (Phase 1 stamped DEFAULT_OWNER_ID unconditionally).
+    """
+    import hmac
+
+    from lambdas.common import ingest_tokens
+    from lambdas.common.constants import DEFAULT_OWNER_ID
+    from lambdas.common.errors import AuthorizationError
+
+    token = get_bearer_token(event)
+    if not token:
+        raise AuthorizationError(
+            message="Missing ingest bearer token",
+            handler="shares_ingest",
+            function="resolve_ingest_owner",
+        )
+
+    # 1. Legacy single SSM key -> Dom. Constant-time compare, no DB dependency.
+    if legacy_key and hmac.compare_digest(token, legacy_key):
+        return DEFAULT_OWNER_ID
+
+    # 2. Per-user token -> its owner (None if unknown/revoked/lookup-failed).
+    owner_id = ingest_tokens.resolve_owner(token)
+    if owner_id:
+        return owner_id
+
+    raise AuthorizationError(
+        message="Invalid or revoked ingest token",
+        handler="shares_ingest",
+        function="resolve_ingest_owner",
+    )
 
 
 # ============================================
