@@ -14,8 +14,11 @@ import pytest
 from moto import mock_aws
 
 from lambdas.common.constants import (
+    ADMIN_EMAIL,
+    INGEST_TOKENS_TABLE_NAME,
     LINK_REQUESTS_TABLE_NAME,
     SHARES_DIRECTION_INDEX,
+    SHARES_OWNER_DIRECTION_INDEX,
     SHARES_SHARER_INDEX,
     SHARES_TABLE_NAME,
     USERS_TABLE_NAME,
@@ -44,6 +47,7 @@ def _create_tables():
             {"AttributeName": "direction", "AttributeType": "S"},
             {"AttributeName": "messageDate", "AttributeType": "N"},
             {"AttributeName": "sharerHandle", "AttributeType": "S"},
+            {"AttributeName": "ownerDirection", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -64,7 +68,22 @@ def _create_tables():
                 "Projection": {"ProjectionType": "ALL"},
                 "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
             },
+            {
+                "IndexName": SHARES_OWNER_DIRECTION_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "ownerDirection", "KeyType": "HASH"},
+                    {"AttributeName": "messageDate", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            },
         ],
+        ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+    )
+    ddb.create_table(
+        TableName=INGEST_TOKENS_TABLE_NAME,
+        KeySchema=[{"AttributeName": "tokenHash", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "tokenHash", "AttributeType": "S"}],
         ProvisionedThroughput={"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
     )
     return boto3.resource("dynamodb", region_name="us-east-1")
@@ -143,6 +162,67 @@ class TestMeGet:
         assert data["spotifyUserId"] == "spotify-user-9"
         # The refresh token is NEVER surfaced in the response.
         assert "refresh-xyz" not in resp_str(data)
+
+
+class TestMeGetAdminAndOwnIngest:
+    """WS6: /me/get also reports isAdmin (email == ADMIN_EMAIL) and ownIngest
+    (caller holds a live ingest token OR owns any share)."""
+
+    def test_is_admin_true_for_admin_email(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email=ADMIN_EMAIL), mock_context)["body"])["data"]
+        assert data["isAdmin"] is True
+
+    def test_is_admin_false_for_other_user(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email="friend@example.com"), mock_context)["body"])["data"]
+        assert data["isAdmin"] is False
+
+    def test_is_admin_case_insensitive(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email=ADMIN_EMAIL.upper()), mock_context)["body"])["data"]
+        assert data["isAdmin"] is True
+
+    def test_own_ingest_false_when_no_token_or_shares(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email="nobody@example.com"), mock_context)["body"])["data"]
+        assert data["ownIngest"] is False
+
+    def test_own_ingest_true_when_active_token(self, tables, authorized_event, mock_context):
+        from lambdas.common import ingest_tokens
+        from lambdas.me_get.handler import handler
+
+        ingest_tokens.mint_token("friend@example.com", label="laptop")
+
+        data = json.loads(handler(authorized_event(email="friend@example.com"), mock_context)["body"])["data"]
+        assert data["ownIngest"] is True
+
+    def test_own_ingest_false_when_only_revoked_token(self, tables, authorized_event, mock_context):
+        from lambdas.common import ingest_tokens
+        from lambdas.me_get.handler import handler
+
+        minted = ingest_tokens.mint_token("revoked@example.com", label="old")
+        ingest_tokens.revoke_token("revoked@example.com", minted["tokenHash"])
+
+        data = json.loads(handler(authorized_event(email="revoked@example.com"), mock_context)["body"])["data"]
+        assert data["ownIngest"] is False
+
+    def test_own_ingest_true_when_owns_shares(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        owner = "sharer@example.com"
+        tables.Table(SHARES_TABLE_NAME).put_item(Item={
+            "shareId": "os1", "messageGuid": "og1", "direction": "in", "sharerHandle": "+9",
+            "ownerId": owner, "ownerDirection": f"{owner}#in", "platform": "spotify",
+            "sourceUrl": "ou1", "messageDate": 1753000000, "matchStatus": "matched", "createdAt": "x",
+        })
+
+        data = json.loads(handler(authorized_event(email=owner), mock_context)["body"])["data"]
+        assert data["ownIngest"] is True
 
 
 def resp_str(data) -> str:

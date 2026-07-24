@@ -19,8 +19,8 @@ from lambdas.common.heard_dynamo import enrich_shares_with_heard
 from lambdas.common.logger import get_logger
 from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
 from lambdas.common.shares_dynamo import (
+    query_owner_feed,
     query_shares_by_direction,
-    query_shares_by_owner_direction,
 )
 from lambdas.common.utility_helpers import (
     get_caller_owner,
@@ -77,15 +77,17 @@ def handler(event: dict, context: Any) -> dict:
 
     since_epoch = _since_epoch_for_window(window)
 
-    # Read cutover (Phase 1C), flag-gated for instant rollback. When owner
-    # scoping is ON we scope the feed to the CALLER'S OWN ownerId (their
-    # normalized email) via GSI-3 -- for Dom (caller email == the owner stamped
-    # on every row post-migration) the result set is IDENTICAL to the legacy
-    # GSI-1 direction query (proven by the parity test); a second user sees only
-    # their own shares. If the flag is OFF we fall back to the legacy GSI-1 path
-    # so the feed can never break. Flip OWNER_SCOPING_ENABLED off = instant revert.
+    # Always-on global feed (WS6), flag-gated for instant rollback. When owner
+    # scoping is ON the feed is the UNION of Dom's shares (DEFAULT_OWNER_ID, the
+    # global baseline EVERY user sees) and the caller's OWN owner-scoped shares,
+    # via GSI-3 -- fanned out to both owner partitions, merged + deduped by
+    # shareId. When the caller IS Dom there is a single partition, so his feed is
+    # exactly his own shares (no double-count) and stays IDENTICAL to the legacy
+    # GSI-1 direction query. If the flag is OFF we fall back to the legacy GSI-1
+    # path so the feed can never break. Flip OWNER_SCOPING_ENABLED off = instant
+    # revert to pre-multi-tenant behavior.
     if OWNER_SCOPING_ENABLED and email:
-        shares = query_shares_by_owner_direction(email, direction, since_epoch)
+        shares = query_owner_feed(email, direction, since_epoch)
     else:
         shares = query_shares_by_direction(direction, since_epoch)
 
