@@ -8,8 +8,21 @@ ordered dedup + skipped-unmatched reporting, and the no-resolvable-tracks
 
 import json
 
+import pytest
+
 import lambdas.playlists_create.handler as H
 from lambdas.common.models import CreatePlaylistRequest
+
+
+@pytest.fixture(autouse=True)
+def _no_directory_upsert(monkeypatch):
+    """
+    Neutralize the WS6 directory auto-upsert hook (fired from get_caller_owner)
+    for this file -- these tests deliberately run WITHOUT moto ("no real AWS/
+    network", see module docstring), so the hook's DynamoDB write to the users
+    table must be stubbed to a no-op here.
+    """
+    monkeypatch.setattr("lambdas.common.user_directory.record_seen", lambda *a, **k: None)
 
 
 class TestCreatePlaylistModel:

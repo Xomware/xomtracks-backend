@@ -234,10 +234,32 @@ def get_caller_owner(event: dict) -> str:
 
     Raises AuthorizationError (HTTP 401) on any token failure (missing,
     malformed, bad signature, expired, or missing email/userId claim).
+
+    Side effects (both FAIL-OPEN -- a failure here never breaks the request):
+      1. Auto-upserts the caller into the user directory (firstSeen/lastSeen,
+         throttled) -- the WS6 admin-portal directory hook.
+      2. Stashes the resolved email on the event so the request-log hook
+         (errors.handle_errors) can record the caller without re-verifying.
     """
     from lambdas.common.xomify_auth import verify_xomify_token
 
-    return verify_xomify_token(event)["email"]
+    email = verify_xomify_token(event)["email"]
+
+    # Directory auto-upsert -- lightweight, throttled, swallows all errors.
+    try:
+        from lambdas.common.user_directory import record_seen
+
+        record_seen(email)
+    except Exception:  # noqa: BLE001 -- fail-open: never break the caller's request
+        pass
+
+    # Stash for the request-log hook (avoids a second token verify downstream).
+    if isinstance(event, dict):
+        from lambdas.common.request_log import CALLER_EMAIL_EVENT_KEY
+
+        event[CALLER_EMAIL_EVENT_KEY] = email
+
+    return email
 
 
 # Back-compat alias: handlers historically read `get_caller_email` for the

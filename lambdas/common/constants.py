@@ -144,6 +144,23 @@ HEARD_TABLE_NAME = os.environ.get('HEARD_TABLE_NAME', '')
 # ingest tokens below. It is retired only at the Phase 4 contract step.
 INGEST_BEARER_KEY_PARAM = os.environ.get('INGEST_BEARER_KEY_PARAM', f'/{PRODUCT}/ingest/BEARER_KEY')
 
+# xomtracks-request-log: TTL'd per-request telemetry backing the admin portal's
+# calls & errors dashboard (WS6). One item per authed API request:
+#   PK id (uuid4); attrs ts (ISO8601), path, method, status (int), email
+#   (caller, or absent), error (message string on failure, absent otherwise),
+#   expiresAt (epoch TTL attribute). A shared hook records each request's outcome
+#   fail-open (never breaks the request); the dashboard aggregates a filtered Scan
+#   over the (TTL-bounded, low-volume) table. NEVER stores secrets/token values --
+#   items are run through errors.mask_sensitive_data before write. Empty table
+#   name => the logging hook is a NO-OP (unconfigured/local/test). See
+#   lambdas/common/request_log.py.
+REQUEST_LOG_TABLE_NAME = os.environ.get('REQUEST_LOG_TABLE_NAME', '')
+
+# Retention window (days) for xomtracks-request-log items -- written onto each
+# item's `expiresAt` TTL attribute (now + this many days). DynamoDB TTL reaps
+# expired rows so the dashboard Scan stays cheap. 21d default (mid 14-30 range).
+REQUEST_LOG_TTL_DAYS = int(os.environ.get('REQUEST_LOG_TTL_DAYS', '21'))
+
 # xomtracks-ingest-tokens: per-user extractor ingest tokens (self-serve
 # foundation Phase 3). PK tokenHash = SHA-256 hex of an opaque random token --
 # the PLAINTEXT is returned to the owner exactly once at mint and NEVER stored.
