@@ -124,3 +124,26 @@ class TestMeGet:
         assert data["linked"] is True
         assert data["linkedHandles"] == ["3364042196"]
         assert data["shareCount"] == 1
+
+    def test_spotify_connected_false_when_no_connection(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email="nobody@example.com"), mock_context)["body"])["data"]
+        assert data["spotifyConnected"] is False
+        assert data["spotifyUserId"] is None
+
+    def test_spotify_connected_true_when_connection_row_present(self, tables, authorized_event, mock_context):
+        from lambdas.common.dynamo_helpers import store_spotify_connection
+        from lambdas.me_get.handler import handler
+
+        store_spotify_connection("member@example.com", "owner-sub-1", "refresh-xyz", "spotify-user-9")
+
+        data = json.loads(handler(authorized_event(email="member@example.com"), mock_context)["body"])["data"]
+        assert data["spotifyConnected"] is True
+        assert data["spotifyUserId"] == "spotify-user-9"
+        # The refresh token is NEVER surfaced in the response.
+        assert "refresh-xyz" not in resp_str(data)
+
+
+def resp_str(data) -> str:
+    return json.dumps(data)
