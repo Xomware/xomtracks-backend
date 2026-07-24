@@ -8,7 +8,7 @@ on-the-spot create endpoint. Wraps the vendored Playlist client with:
   xomtracks-users, per PLAN.md's single-service-account model),
 - ordered-unique URI collection (dedup preserving newest-first order --
   NOT release-radar's order-losing set()),
-- create-or-replace-in-place upsert with the Xomtracks logo cover.
+- create-or-replace-in-place upsert with the xomify-branded cover.
 
 Every playlist Xomtracks builds is PUBLIC on Dom's profile (locked
 decision -- Playlist defaults public=True).
@@ -22,7 +22,7 @@ from lambdas.common.dynamo_helpers import (
     get_spotify_user_by_owner,
 )
 from lambdas.common.logger import get_logger
-from lambdas.common.logo import XOMTRACKS_LOGO_BASE_64
+from lambdas.common.covers import XOMIFY_COVER_BASE_64
 from lambdas.common.playlist import Playlist
 from lambdas.common.spotify import Spotify
 
@@ -166,7 +166,7 @@ async def upsert_playlist(
     name: str,
     description: str,
     uris: list[str],
-    image: str | None = XOMTRACKS_LOGO_BASE_64,
+    image: str | None = XOMIFY_COVER_BASE_64,
 ) -> str:
     """
     Create a new public playlist (cover + tracks) when playlist_id is unset,
@@ -199,7 +199,7 @@ async def create_playlist(
     uris: list[str],
     *,
     owner_email: str | None = None,
-    image: str | None = XOMTRACKS_LOGO_BASE_64,
+    image: str | None = XOMIFY_COVER_BASE_64,
 ) -> str:
     """
     One-shot: build a client for the CALLER (their own Spotify if connected,
