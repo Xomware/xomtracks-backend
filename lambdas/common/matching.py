@@ -26,6 +26,7 @@ should never blow up a matching sweep across many pending shares.
 """
 
 import re
+from urllib.parse import urlparse, urlunparse
 
 import requests
 from rapidfuzz import fuzz
@@ -165,11 +166,74 @@ def fuzzy_best_match(
     return best_candidate, max(best_score, 0.0)
 
 
+# SoundCloud "Copy Link" / share-sheet hosts. These serve an opaque hash
+# (e.g. on.soundcloud.com/LA3v2rA4vjcaIcTjyU) that 302-redirects to the
+# canonical soundcloud.com/<user>/<track> URL. SoundCloud's api-v2 `resolve`
+# endpoint does NOT resolve these short hosts directly -- it needs the
+# canonical URL -- so we must follow the redirect ourselves first. The
+# extractor already recognizes these hosts (see url_extractor.PLATFORM_PATTERNS)
+# and ingests the raw short link; canonicalization lives here so title/artist
+# resolution stays in ONE place alongside the other platforms' resolvers.
+_SOUNDCLOUD_SHORTLINK_HOSTS = frozenset({
+    "on.soundcloud.com",
+    "soundcloud.app.goo.gl",
+    "snd.sc",
+})
+
+_SHORTLINK_TIMEOUT = 10
+
+
+def _is_soundcloud_short_link(url: str) -> bool:
+    return urlparse(url).netloc.lower() in _SOUNDCLOUD_SHORTLINK_HOSTS
+
+
+def _strip_query(url: str) -> str:
+    """Drop query + fragment (share links tack on ?si=...&utm_* tracking
+    params that the resolve endpoint doesn't need)."""
+    parts = urlparse(url)
+    return urlunparse((parts.scheme, parts.netloc, parts.path, "", "", ""))
+
+
+def _canonicalize_soundcloud_url(url: str) -> str:
+    """
+    Follow a SoundCloud short/share link's redirect to the canonical
+    soundcloud.com track URL. Returns the URL unchanged when it isn't a short
+    link, and degrades to the original short URL if the redirect can't be
+    followed (the resolve call will then simply fail -> unmatched, never a
+    crash). HEAD first (cheap, no track-page body); GET fallback for the
+    shorteners that reject HEAD.
+    """
+    if not _is_soundcloud_short_link(url):
+        return url
+
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=_SHORTLINK_TIMEOUT)
+        final = resp.url
+        if resp.status_code >= 400 or _is_soundcloud_short_link(final):
+            resp = requests.get(url, allow_redirects=True, timeout=_SHORTLINK_TIMEOUT)
+            final = resp.url
+    except Exception as err:
+        log.warning(f"SoundCloud short-link redirect follow failed for {url}: {err}")
+        return url
+
+    if not final or _is_soundcloud_short_link(final):
+        log.warning(f"SoundCloud short link did not redirect to a canonical URL: {url}")
+        return url
+
+    canonical = _strip_query(final)
+    log.info(f"Resolved SoundCloud short link {url} -> {canonical}")
+    return canonical
+
+
 async def default_soundcloud_resolver(url: str) -> tuple[str, str] | None:
     """
     Resolve a SoundCloud URL to (title, artist) via the scraped
     `client_id` path (same credential xomcloud-backend's downloader.py
     uses -- see lambdas/common/ssm_helpers.SOUNDCLOUD_CLIENT_ID).
+
+    Short/share links (on.soundcloud.com/<hash>, soundcloud.app.goo.gl/...,
+    snd.sc/...) are canonicalized via their redirect FIRST -- the resolve
+    endpoint can't take the opaque hash directly.
 
     Uses the synchronous `requests` library (matches xomcloud's own scdl
     usage, which is also sync) -- briefly blocks the event loop per call.
@@ -179,14 +243,16 @@ async def default_soundcloud_resolver(url: str) -> tuple[str, str] | None:
     """
     from lambdas.common import ssm_helpers
 
+    resolve_url = _canonicalize_soundcloud_url(url)
+
     client_id = ssm_helpers.SOUNDCLOUD_CLIENT_ID
     resp = requests.get(
         "https://api-v2.soundcloud.com/resolve",
-        params={"url": url, "client_id": client_id},
+        params={"url": resolve_url, "client_id": client_id},
         timeout=10,
     )
     if resp.status_code != 200:
-        log.warning(f"SoundCloud resolve failed ({resp.status_code}) for {url}")
+        log.warning(f"SoundCloud resolve failed ({resp.status_code}) for {resolve_url}")
         return None
 
     data = resp.json()

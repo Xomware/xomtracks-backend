@@ -40,6 +40,23 @@ class TestBuildSharesFromMessage:
         row = _row(text="just saying hi")
         assert build_shares_from_message(row) == []
 
+    def test_soundcloud_short_link_builds_share(self):
+        # Ingest-side guarantee: a SoundCloud share-sheet short link (the form
+        # that silently produced shares_found: 0 before this fix) must build a
+        # soundcloud share so it reaches the matcher for title resolution.
+        from extractor.share_builder import build_shares_from_message
+
+        row = _row(
+            text="listen https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU",
+            is_from_me=0,
+            handle_identifier="+13364042196",
+        )
+        shares = build_shares_from_message(row)
+
+        assert len(shares) == 1
+        assert shares[0]["platform"] == "soundcloud"
+        assert shares[0]["sourceUrl"] == "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+
     def test_single_text_url_incoming(self):
         from extractor.share_builder import build_shares_from_message
 
