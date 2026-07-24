@@ -12,13 +12,22 @@ here yet, even though shares_dynamo.query_shares_by_sharer already exists.
 import time
 from typing import Any
 
+from lambdas.common.constants import OWNER_SCOPING_ENABLED
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.genres import ensure_genres
 from lambdas.common.heard_dynamo import enrich_shares_with_heard
 from lambdas.common.logger import get_logger
 from lambdas.common.ratings_dynamo import enrich_shares_with_ratings
-from lambdas.common.shares_dynamo import query_shares_by_direction
-from lambdas.common.utility_helpers import get_caller_email, get_query_params, success_response
+from lambdas.common.shares_dynamo import (
+    query_shares_by_direction,
+    query_shares_by_owner_direction,
+)
+from lambdas.common.utility_helpers import (
+    get_caller_email,
+    get_caller_sub,
+    get_query_params,
+    success_response,
+)
 
 log = get_logger(__file__)
 
@@ -68,7 +77,19 @@ def handler(event: dict, context: Any) -> dict:
         )
 
     since_epoch = _since_epoch_for_window(window)
-    shares = query_shares_by_direction(direction, since_epoch)
+
+    # Read cutover (Phase 1C), flag-gated for instant rollback. When owner
+    # scoping is ON we scope the feed to the CALLER'S OWN ownerId (Cognito sub)
+    # via GSI-3 -- for Dom (caller sub == the owner stamped on every row) the
+    # result set is IDENTICAL to the legacy GSI-1 direction query (proven by the
+    # parity test); a second user sees only their own shares. If the flag is OFF,
+    # or the caller somehow has no sub, we fall back to the legacy GSI-1 path so
+    # the feed can never break. Flip OWNER_SCOPING_ENABLED off = instant revert.
+    caller_sub = get_caller_sub(event)
+    if OWNER_SCOPING_ENABLED and caller_sub:
+        shares = query_shares_by_owner_direction(caller_sub, direction, since_epoch)
+    else:
+        shares = query_shares_by_direction(direction, since_epoch)
 
     # Newest first -- most useful default for a browse UI.
     shares.sort(key=lambda s: s.get("messageDate", 0), reverse=True)

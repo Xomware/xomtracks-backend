@@ -36,6 +36,31 @@ SHARES_DIRECTION_INDEX = os.environ.get('SHARES_DIRECTION_INDEX', 'direction-mes
 # handler queries it yet.
 SHARES_SHARER_INDEX = os.environ.get('SHARES_SHARER_INDEX', 'sharerHandle-messageDate-index')
 
+# GSI-3 on xomtracks-shares: PK ownerDirection (`<ownerId>#<direction>`), SK
+# messageDate -- the OWNER-SCOPED time-window browse query that makes the app
+# multi-tenant (self-serve foundation Phase 1). Sparse until the ownerId
+# backfill runs; `query_shares_by_direction` (GSI-1) stays the instant-rollback
+# read path. See docs/features/xomtracks-selfserve/PLAN.md Phase 1.
+SHARES_OWNER_DIRECTION_INDEX = os.environ.get(
+    'SHARES_OWNER_DIRECTION_INDEX', 'ownerDirection-messageDate-index'
+)
+
+# The Cognito `sub` that every LEGACY share (pre-multi-tenant) and every
+# legacy-auth ingest resolves to -- Dom, the sole owner of the ~325 live rows.
+# `sub` is stable + rename-proof (see utility_helpers.get_caller_sub). NOT a
+# secret (a user identifier, same posture as ADMIN_EMAIL's hardcoded default);
+# the value is Dom's sub in the shared xomware_users pool. Terraform also injects
+# it via env so it is overridable without a code change.
+DEFAULT_OWNER_ID = os.environ.get(
+    'DEFAULT_OWNER_ID', 'f4e80448-2061-7059-0c26-d0fd91863568'
+)
+
+# Read-cutover kill-switch (Phase 1C). When "true", shares_list scopes the feed
+# to the caller's OWN ownerId via GSI-3; when off, the legacy GSI-1 direction
+# query serves everyone (Dom-only behavior). Flip to false for an INSTANT revert
+# to the pre-multi-tenant read path -- no redeploy, no data change.
+OWNER_SCOPING_ENABLED = os.environ.get('OWNER_SCOPING_ENABLED', 'false').strip().lower() == 'true'
+
 # xomtracks' OWN Spotify-connected service-account user row (self-contained
 # per PLAN.md Option 3 -- this is NOT xomify's users table). A single row,
 # keyed by email, holds the refresh token the app plays/searches/builds

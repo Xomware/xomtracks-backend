@@ -12,7 +12,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from lambdas.common.constants import SHARES_TABLE_NAME, SHARES_DIRECTION_INDEX, SHARES_SHARER_INDEX
+from lambdas.common.constants import (
+    SHARES_TABLE_NAME,
+    SHARES_DIRECTION_INDEX,
+    SHARES_SHARER_INDEX,
+    SHARES_OWNER_DIRECTION_INDEX,
+)
 
 
 def _create_table():
@@ -25,6 +30,7 @@ def _create_table():
             {"AttributeName": "direction", "AttributeType": "S"},
             {"AttributeName": "messageDate", "AttributeType": "N"},
             {"AttributeName": "sharerHandle", "AttributeType": "S"},
+            {"AttributeName": "ownerDirection", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -40,6 +46,15 @@ def _create_table():
                 "IndexName": SHARES_SHARER_INDEX,
                 "KeySchema": [
                     {"AttributeName": "sharerHandle", "KeyType": "HASH"},
+                    {"AttributeName": "messageDate", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            },
+            {
+                "IndexName": SHARES_OWNER_DIRECTION_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "ownerDirection", "KeyType": "HASH"},
                     {"AttributeName": "messageDate", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
@@ -118,6 +133,19 @@ class TestSharesIngestBehavior:
         import boto3 as _boto3
         table = _boto3.resource("dynamodb", region_name="us-east-1").Table(SHARES_TABLE_NAME)
         assert len(table.scan()["Items"]) == 1
+
+    def test_stamps_default_owner_and_owner_direction(self, ddb_table, ingest_event, mock_context):
+        # Phase 1 expand: every new ingest is stamped with DEFAULT_OWNER_ID
+        # (Dom) and the derived ownerDirection, so GSI-3 fills going forward.
+        from lambdas.shares_ingest.handler import handler
+        from lambdas.common.constants import DEFAULT_OWNER_ID
+
+        event = ingest_event(bearer_key="test-ingest-key", body=json.dumps(VALID_BODY))
+        response = handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        assert body["data"]["ownerId"] == DEFAULT_OWNER_ID
+        assert body["data"]["ownerDirection"] == f"{DEFAULT_OWNER_ID}#{VALID_BODY['direction']}"
 
     def test_invalid_payload_is_400(self, ddb_table, ingest_event, mock_context):
         from lambdas.shares_ingest.handler import handler

@@ -32,6 +32,12 @@ class ShareIngestRequest(BaseModel):
     platform: str
     sourceUrl: str = Field(min_length=1)
     messageDate: int  # unix epoch seconds (already converted from Apple epoch)
+    # Multi-tenant owner key (self-serve foundation Phase 1). OPTIONAL at the
+    # boundary: the current extractor never sends it -- the ingest handler
+    # stamps DEFAULT_OWNER_ID (Phase 1) / the per-token owner (Phase 3). Absent
+    # => legacy single-tenant write, back-compat preserved.
+    ownerId: str | None = None
+    ownerDirection: str | None = None  # derived server-side as `<ownerId>#<direction>`
 
     @field_validator("messageGuid", "sourceUrl")
     @classmethod
@@ -61,6 +67,12 @@ class Share(BaseModel):
     shareId: str
     messageGuid: str
     direction: str
+    # Multi-tenant owner key (self-serve foundation Phase 1). OPTIONAL so legacy
+    # rows (no ownerId until the backfill runs) still round-trip. `ownerDirection`
+    # (`<ownerId>#<direction>`) is the GSI-3 hash key powering the owner-scoped
+    # feed; kept sparse on the index while absent.
+    ownerId: str | None = None
+    ownerDirection: str | None = None
     sharerHandle: str | None = None
     sharerName: str | None = None
     chatId: str | None = None
