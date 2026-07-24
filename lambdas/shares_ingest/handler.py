@@ -15,7 +15,6 @@ from typing import Any
 from pydantic import ValidationError as PydanticValidationError
 
 from lambdas.common import ssm_helpers
-from lambdas.common.constants import DEFAULT_OWNER_ID
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
 from lambdas.common.models import ShareIngestRequest
@@ -24,7 +23,7 @@ from lambdas.common.shares_dynamo import (
     derive_share_id,
     put_share_idempotent,
 )
-from lambdas.common.utility_helpers import parse_body, require_ingest_bearer_key, success_response
+from lambdas.common.utility_helpers import parse_body, resolve_ingest_owner, success_response
 
 log = get_logger(__file__)
 
@@ -33,7 +32,11 @@ HANDLER = "shares_ingest"
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    require_ingest_bearer_key(event, ssm_helpers.INGEST_BEARER_KEY)
+    # Phase 3: resolve the OWNER this ingest authenticates as. Dual-accept --
+    # the legacy SSM bearer key maps to DEFAULT_OWNER_ID (Dom) so his extractor
+    # is unchanged, while a per-user ingest token resolves to its own owner.
+    # 401 if neither matches.
+    owner_id = resolve_ingest_owner(event, ssm_helpers.INGEST_BEARER_KEY)
 
     body = parse_body(event)
     try:
@@ -46,11 +49,10 @@ def handler(event: dict, context: Any) -> dict:
         ) from err
 
     share_id = derive_share_id(req.messageGuid, req.sourceUrl)
-    # Multi-tenant Phase 1: every NEW write is owner-stamped. Phase 1 resolves
-    # every ingest to DEFAULT_OWNER_ID (Dom -- the extractor still uses the
-    # single SSM bearer key); Phase 3 swaps this for the per-token owner.
-    # ownerDirection is derived server-side so GSI-3's key can never drift.
-    owner_id = DEFAULT_OWNER_ID
+    # Multi-tenant: every NEW write is owner-stamped with the resolved owner
+    # (Phase 1 stamped DEFAULT_OWNER_ID unconditionally; Phase 3 makes it the
+    # real per-token owner). ownerDirection is derived server-side so GSI-3's
+    # key can never drift.
     share = {
         "shareId": share_id,
         "messageGuid": req.messageGuid,

@@ -134,7 +134,24 @@ HEARD_TABLE_NAME = os.environ.get('HEARD_TABLE_NAME', '')
 # ============================================
 # Extractor -> POST /shares/ingest auth: a scoped key in SSM, sent as a
 # bearer token. Separate from the per-user JWT auth_login mints.
+#
+# Self-serve foundation Phase 3: this single SSM key is now the LEGACY fallback.
+# resolve_ingest_owner dual-accepts it (mapping it to DEFAULT_OWNER_ID, i.e. Dom)
+# so his running extractor keeps working unchanged, alongside the new per-user
+# ingest tokens below. It is retired only at the Phase 4 contract step.
 INGEST_BEARER_KEY_PARAM = os.environ.get('INGEST_BEARER_KEY_PARAM', f'/{PRODUCT}/ingest/BEARER_KEY')
+
+# xomtracks-ingest-tokens: per-user extractor ingest tokens (self-serve
+# foundation Phase 3). PK tokenHash = SHA-256 hex of an opaque random token --
+# the PLAINTEXT is returned to the owner exactly once at mint and NEVER stored.
+# attrs: tokenHash, ownerId (Cognito sub the ingested shares are stamped with),
+# createdAt (epoch), revoked (bool), revokedAt (epoch, when revoked), lastUsedAt
+# (epoch, best-effort), label (optional human tag). Opaque + hashed (NOT a JWT)
+# so tokens are revocable (flip `revoked`) with no signing-key blast radius.
+# Name matches the `xomtracks*` ARN prefix the lambda_role already grants
+# DynamoDB on -- no IAM change. See lambdas/common/ingest_tokens.py and
+# docs/features/xomtracks-selfserve/PLAN.md Phase 3.
+INGEST_TOKENS_TABLE_NAME = os.environ.get('INGEST_TOKENS_TABLE_NAME', '')
 
 # ============================================
 # Matching

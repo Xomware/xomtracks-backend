@@ -242,6 +242,53 @@ class SetHeardRequest(BaseModel):
         return v.strip()
 
 
+class CreateIngestTokenRequest(BaseModel):
+    """
+    POST /ingest-tokens/create -- mint a per-user extractor ingest token
+    (self-serve foundation Phase 3). Body is optional; `label` is a human tag
+    for the token (e.g. the device it lives on) surfaced back at revoke time.
+    """
+
+    label: str | None = Field(default=None, max_length=100)
+
+    @field_validator("label")
+    @classmethod
+    def strip_label(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+
+class RevokeIngestTokenRequest(BaseModel):
+    """
+    POST /ingest-tokens/revoke -- revoke one of the caller's ingest tokens.
+    Identify it EITHER by `tokenHash` (the non-secret id returned at mint) OR by
+    presenting the plaintext `token`. At least one is required.
+    """
+
+    tokenHash: str | None = None
+    token: str | None = None
+
+    @field_validator("tokenHash", "token")
+    @classmethod
+    def strip_value(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    def resolve_token_hash(self) -> str | None:
+        """The tokenHash to revoke -- given directly, or derived from plaintext."""
+        from lambdas.common.ingest_tokens import hash_token
+
+        if self.tokenHash:
+            return self.tokenHash
+        if self.token:
+            return hash_token(self.token)
+        return None
+
+
 class CreatePlaylistRequest(BaseModel):
     """
     POST /playlists/create -- on-the-spot playlist build from a hand-picked

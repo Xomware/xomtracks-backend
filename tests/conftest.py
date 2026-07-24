@@ -32,6 +32,7 @@ _TEST_ENV_VARS = {
     "HEARD_TABLE_NAME": "xomtracks-heard-test",
     "AUTO_HEARD_RATER_EMAIL": "dom@example.com",
     "LINK_REQUESTS_TABLE_NAME": "xomtracks-link-requests-test",
+    "INGEST_TOKENS_TABLE_NAME": "xomtracks-ingest-tokens-test",
     "ADMIN_EMAIL": "dominickj.giordano@gmail.com",
 }
 for key, value in _TEST_ENV_VARS.items():
