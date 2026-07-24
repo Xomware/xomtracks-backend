@@ -24,9 +24,27 @@ every real share.
 import plistlib
 import re
 
+# SoundCloud is shared in two shapes we must both recognize:
+#   1. Canonical:   soundcloud.com/<user>/<track>  (also www. / m. subdomains)
+#   2. Short/share: on.soundcloud.com/<hash>, soundcloud.app.goo.gl/<...>,
+#      snd.sc/<...>  -- the "Copy Link" / share-sheet forms. These carry NO
+#      user/track slug, just an opaque hash that 302-redirects to the
+#      canonical URL. Detection here only has to KEEP the URL (so the share
+#      gets ingested at all); resolving the hash to a real title/artist
+#      happens in the matcher (lambdas/common/matching.default_soundcloud_resolver,
+#      which follows the redirect before hitting SoundCloud's resolve API).
+#      Before this, on.soundcloud.com links returned platform=None and were
+#      silently dropped (shares_found: 0) -- the bug this fixes.
 PLATFORM_PATTERNS: dict[str, re.Pattern] = {
     "spotify": re.compile(r"^https?://open\.spotify\.com/", re.IGNORECASE),
-    "soundcloud": re.compile(r"^https?://(?:www\.)?soundcloud\.com/", re.IGNORECASE),
+    "soundcloud": re.compile(
+        r"^https?://(?:"
+        r"(?:www\.|m\.|on\.)?soundcloud\.com/"  # canonical + www/m/on subdomains
+        r"|soundcloud\.app\.goo\.gl/"           # Firebase dynamic-link share form
+        r"|snd\.sc/"                            # legacy snd.sc shortener
+        r")",
+        re.IGNORECASE,
+    ),
     "apple": re.compile(r"^https?://music\.apple\.com/", re.IGNORECASE),
 }
 
