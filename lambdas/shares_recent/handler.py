@@ -1,7 +1,13 @@
 """
-GET /shares/recent?limit=5 -- compact, most-recent shares for the xomware.com
-hub widget's "powered by Xomtracks" strip (authed, Cognito-gated -- the hub user
-is signed into xomware).
+GET /shares/recent?limit=5[&ownerId=<email>] -- compact, most-recent shares for
+the PUBLIC xomware.com hub showcase strip ("powered by Xomtracks").
+
+PUBLIC route (WS-AUTH): the hub showcase is unauthenticated -- the API Gateway
+route is `NONE` and this handler does NO caller-identity check. Instead it
+server-side-scopes to the SHOWCASE owner: Dom's normalized email
+(DEFAULT_OWNER_ID) by default, or an explicit `ownerId` querystring override.
+Scoping is via GSI-3 (ownerDirection-messageDate-index), so a second user's
+rows can never leak into the public strip.
 
 Returns a SMALL set of the newest shares in each direction:
   - sharedWithMe  <- direction=in  (tracks dropped into the group chat)
@@ -15,15 +21,16 @@ the hub strip only needs a handful of cards, not the full feed.
 
 ROUTE NOTE: GET /shares/recent -- a sibling path_part under the `shares` prefix
 (same 2-path-level module constraint as GET /shares/list). The handler reads the
-Cognito authorizer context + querystring only, not the URL path.
+querystring only, not the URL path.
 """
 
 from typing import Any
 
+from lambdas.common.constants import DEFAULT_OWNER_ID
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
-from lambdas.common.shares_dynamo import query_shares_by_direction
-from lambdas.common.utility_helpers import get_caller_email, get_query_params, success_response
+from lambdas.common.shares_dynamo import query_shares_by_owner_direction
+from lambdas.common.utility_helpers import get_query_params, success_response
 
 log = get_logger(__file__)
 
@@ -55,6 +62,15 @@ def _parse_limit(raw: str | None) -> int:
     return min(value, MAX_LIMIT)
 
 
+def _resolve_owner(params: dict) -> str:
+    """Scope to the explicit ownerId query param if provided (normalized), else
+    the default showcase owner (Dom)."""
+    raw = params.get("ownerId")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().lower()
+    return DEFAULT_OWNER_ID
+
+
 def _compact(share: dict) -> dict:
     """Project a share to the compact fields the hub strip renders."""
     return {
@@ -70,26 +86,26 @@ def _compact(share: dict) -> dict:
     }
 
 
-def _recent_for_direction(direction: str, limit: int) -> list[dict]:
-    shares = query_shares_by_direction(direction, 0)
+def _recent_for_direction(owner_id: str, direction: str, limit: int) -> list[dict]:
+    shares = query_shares_by_owner_direction(owner_id, direction, 0)
     shares.sort(key=lambda s: s.get("messageDate", 0), reverse=True)
     return [_compact(s) for s in shares[:limit]]
 
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    # Authed route -- 401 if the Cognito authorizer context is absent.
-    get_caller_email(event)
-
+    # PUBLIC route -- no auth. Scope to the showcase owner (Dom by default).
     params = get_query_params(event)
     limit = _parse_limit(params.get("limit"))
+    owner_id = _resolve_owner(params)
 
-    shared_with_me = _recent_for_direction("in", limit)
-    shared_by_me = _recent_for_direction("out", limit)
+    shared_with_me = _recent_for_direction(owner_id, "in", limit)
+    shared_by_me = _recent_for_direction(owner_id, "out", limit)
 
     return success_response({
         "sharedWithMe": shared_with_me,
         "sharedByMe": shared_by_me,
+        "ownerId": owner_id,
         "limit": limit,
         "count": len(shared_with_me) + len(shared_by_me),
     })

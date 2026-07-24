@@ -11,10 +11,10 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from conftest import make_xomify_token
 from lambdas.common.constants import USERS_TABLE_NAME
 
 EMAIL = "dom@example.com"
-SUB = "f4e80448-2061-7059-0c26-d0fd91863568"
 
 
 def _create_users_table():
@@ -28,14 +28,14 @@ def _create_users_table():
     return ddb.Table(USERS_TABLE_NAME)
 
 
-def _event(body: dict, email: str = EMAIL, sub: str | None = SUB) -> dict:
-    claims = {"email": email}
-    if sub is not None:
-        claims["sub"] = sub
+def _event(body: dict, email: str = EMAIL) -> dict:
     return {
         "httpMethod": "POST",
-        "headers": {"Content-Type": "application/json"},
-        "requestContext": {"authorizer": {"claims": claims}},
+        "headers": {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {make_xomify_token(email)}",
+        },
+        "requestContext": {},
         "body": json.dumps(body),
         "isBase64Encoded": False,
     }
@@ -69,11 +69,11 @@ class TestSpotifyCallbackHandler:
             data = json.loads(resp["body"])["data"]
             assert data["connected"] is True
             assert data["spotifyUserId"] == "spotify-uid"
-            assert data["ownerId"] == SUB
-            # refresh token stored on the row, keyed by owner sub, state cleared
+            assert data["ownerId"] == EMAIL
+            # refresh token stored on the row, keyed by owner email, state cleared
             row = table.get_item(Key={"email": EMAIL})["Item"]
             assert row["refreshToken"] == "RT"
-            assert row["ownerId"] == SUB
+            assert row["ownerId"] == EMAIL
             assert row["spotifyUserId"] == "spotify-uid"
             assert row["userId"] == "spotify-uid"
             assert "spotifyAuthState" not in row
@@ -107,11 +107,18 @@ class TestSpotifyCallbackHandler:
             resp = H.handler(_event({"code": "c", "state": "STATE1"}), mock_context)
             assert resp["statusCode"] == 401
 
-    def test_missing_sub_is_401(self, monkeypatch, mock_context):
+    def test_invalid_token_is_401(self, monkeypatch, mock_context):
         with mock_aws():
             _create_users_table()
             H = _patch_exchange(monkeypatch)
-            resp = H.handler(_event({"code": "c", "state": "s"}, sub=None), mock_context)
+            event = {
+                "httpMethod": "POST",
+                "headers": {"Content-Type": "application/json", "Authorization": "Bearer garbage"},
+                "requestContext": {},
+                "body": json.dumps({"code": "c", "state": "s"}),
+                "isBase64Encoded": False,
+            }
+            resp = H.handler(event, mock_context)
             assert resp["statusCode"] == 401
 
     def test_redirect_uri_mismatch_is_400(self, monkeypatch, mock_context):
