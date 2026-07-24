@@ -45,14 +45,17 @@ SHARES_OWNER_DIRECTION_INDEX = os.environ.get(
     'SHARES_OWNER_DIRECTION_INDEX', 'ownerDirection-messageDate-index'
 )
 
-# The Cognito `sub` that every LEGACY share (pre-multi-tenant) and every
-# legacy-auth ingest resolves to -- Dom, the sole owner of the ~325 live rows.
-# `sub` is stable + rename-proof (see utility_helpers.get_caller_sub). NOT a
-# secret (a user identifier, same posture as ADMIN_EMAIL's hardcoded default);
-# the value is Dom's sub in the shared xomware_users pool. Terraform also injects
-# it via env so it is overridable without a code change.
+# The normalized (lowercased) EMAIL that every LEGACY share (pre-WS-AUTH) and
+# every legacy-key ingest resolves to -- Dom, the sole owner of the ~325 live
+# rows. WS-AUTH re-based identity from the Cognito `sub` onto the xomify token's
+# email; email is the one stable id common to both apps, so it is now the
+# ownerId everywhere. NOT a secret (a user identifier, same posture as
+# ADMIN_EMAIL's hardcoded default). Terraform also injects it via env so it is
+# overridable without a code change. (Dom's PRIOR ownerId -- the Cognito sub
+# f4e80448-2061-7059-0c26-d0fd91863568 -- is what scripts/migrate_ownerid_to_
+# email.py re-stamps FROM.)
 DEFAULT_OWNER_ID = os.environ.get(
-    'DEFAULT_OWNER_ID', 'f4e80448-2061-7059-0c26-d0fd91863568'
+    'DEFAULT_OWNER_ID', 'dominickj.giordano@gmail.com'
 )
 
 # Read-cutover kill-switch (Phase 1C). When "true", shares_list scopes the feed

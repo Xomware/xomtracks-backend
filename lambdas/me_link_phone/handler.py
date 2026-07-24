@@ -13,8 +13,8 @@ the admin (Dom) can grant it -- so a member can't attribute someone else's
 number to themselves.
 
 Flow:
-  1. Resolve the caller's identity from the Cognito authorizer claims (email
-     required; sub stored too when present).
+  1. Resolve the caller's identity (normalized email) from the verified xomify
+     token (WS-AUTH).
   2. Normalize the submitted phone number to last-10 digits (phone.normalize_
      phone -- the same rule the extractor uses on Contacts/handles).
   3. Resolve the SAVED NAME for that number: look up any share whose normalized
@@ -39,7 +39,7 @@ from lambdas.common.logger import get_logger
 from lambdas.common.models import LinkPhoneRequest
 from lambdas.common.phone import normalize_phone
 from lambdas.common.shares_dynamo import scan_shares_by_normalized_handles
-from lambdas.common.utility_helpers import get_caller_email, get_caller_sub, parse_body, success_response
+from lambdas.common.utility_helpers import get_caller_owner, parse_body, success_response
 
 log = get_logger(__file__)
 
@@ -60,9 +60,12 @@ def _resolve_saved_name(handle: str) -> str | None:
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    # Authed route -- 401 if the Cognito authorizer context is absent.
-    email = get_caller_email(event)
-    sub = get_caller_sub(event)
+    # Authed route -- 401 if the caller's xomify token is missing/invalid.
+    # Under WS-AUTH the caller's normalized email IS their durable identity
+    # (there is no separate Cognito sub any more), so `sub` is left None on the
+    # request row -- attribution keys on requesterEmail.
+    email = get_caller_owner(event)
+    sub = None
 
     body = parse_body(event)
     try:

@@ -1,7 +1,7 @@
 """
 RED-before-GREEN: GET /shares -- query by direction + time window
-(week/month/6mo/all) via GSI-1. Authed route (per-user JWT, gated by the
-custom authorizer -- see conftest.authorized_event).
+(week/month/6mo/all) via GSI-1. Authed route (xomify HS256 token, validated
+in-handler -- see conftest.authorized_event).
 """
 
 import json
@@ -11,6 +11,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from conftest import make_xomify_token
 from lambdas.common.constants import (
     SHARES_TABLE_NAME,
     SHARES_DIRECTION_INDEX,
@@ -18,7 +19,8 @@ from lambdas.common.constants import (
     SHARES_OWNER_DIRECTION_INDEX,
 )
 
-DOM_SUB = "sub-dom-owner"
+# WS-AUTH: ownerId is the caller's normalized email, not a Cognito sub.
+DOM_OWNER = "dom@example.com"
 
 
 def _create_table():
@@ -112,8 +114,8 @@ def owned_table():
         ]
         for r in rows:
             r.update({
-                "ownerId": DOM_SUB,
-                "ownerDirection": f"{DOM_SUB}#{r['direction']}",
+                "ownerId": DOM_OWNER,
+                "ownerDirection": f"{DOM_OWNER}#{r['direction']}",
                 "chatId": "c1", "platform": "spotify",
                 "matchStatus": "matched", "createdAt": "x",
             })
@@ -121,12 +123,14 @@ def owned_table():
         yield table
 
 
-def _authed_with_sub(email: str, sub: str, **qs) -> dict:
+def _authed(email: str, **qs) -> dict:
+    """Event carrying a valid xomify token for `email` (the caller's ownerId)."""
     return {
-        "httpMethod": "GET", "path": "/shares", "headers": {}, "body": None,
-        "isBase64Encoded": False,
+        "httpMethod": "GET", "path": "/shares",
+        "headers": {"Authorization": f"Bearer {make_xomify_token(email)}"},
+        "body": None, "isBase64Encoded": False,
         "queryStringParameters": qs or None,
-        "requestContext": {"authorizer": {"claims": {"email": email, "sub": sub}}},
+        "requestContext": {},
     }
 
 
@@ -137,7 +141,7 @@ class TestSharesListOwnerScoping:
         import lambdas.shares_list.handler as h
 
         monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
-        event = _authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all")
+        event = _authed(DOM_OWNER, direction="in", window="all")
         response = h.handler(event, mock_context)
         body = json.loads(response["body"])
 
@@ -150,13 +154,13 @@ class TestSharesListOwnerScoping:
 
         monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", False)
         legacy = json.loads(
-            h.handler(_authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all"),
+            h.handler(_authed(DOM_OWNER, direction="in", window="all"),
                       mock_context)["body"]
         )["data"]["shares"]
 
         monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
         owned = json.loads(
-            h.handler(_authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all"),
+            h.handler(_authed(DOM_OWNER, direction="in", window="all"),
                       mock_context)["body"]
         )["data"]["shares"]
 
@@ -166,7 +170,7 @@ class TestSharesListOwnerScoping:
         import lambdas.shares_list.handler as h
 
         monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
-        event = _authed_with_sub("friend@example.com", "sub-friend", direction="in", window="all")
+        event = _authed("friend@example.com", direction="in", window="all")
         response = h.handler(event, mock_context)
         body = json.loads(response["body"])
 
@@ -178,7 +182,7 @@ class TestSharesListOwnerScoping:
         import lambdas.shares_list.handler as h
 
         monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", False)
-        event = _authed_with_sub("friend@example.com", "sub-friend", direction="in", window="all")
+        event = _authed("friend@example.com", direction="in", window="all")
         response = h.handler(event, mock_context)
         body = json.loads(response["body"])
 

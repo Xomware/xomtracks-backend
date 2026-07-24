@@ -210,66 +210,54 @@ def require_fields(data: dict, *fields: str) -> None:
 
 
 # ============================================
-# Caller Identity Resolution
+# Caller Identity Resolution (WS-AUTH: xomify HS256 token, in-handler)
 # ============================================
-# The native API Gateway COGNITO_USER_POOLS authorizer (see
-# xomtracks-infrastructure) validates the caller's Cognito JWT and places
-# its claims at event.requestContext.authorizer.claims.{sub,email,...} --
-# NOT directly on authorizer.* the way a custom Lambda authorizer would.
-# The caller must send the Cognito ID token so the `email` claim is
-# present. The extractor ingest route uses a *different* auth mechanism
-# entirely (a scoped SSM bearer key, see require_ingest_bearer_key below)
-# -- it never carries a caller email.
+# xomify is the sole frontend and signs a homegrown HS256 JWT (claims `email`
+# + `userId`) with the secret at SSM `/xomify/api/API_SECRET_KEY`. There is NO
+# Cognito authorizer any more -- the authed API Gateway routes are `NONE` and
+# each handler validates the caller's Bearer token IN-HANDLER via
+# xomify_auth.verify_xomify_token (mirroring how POST /shares/ingest already
+# validates its SSM bearer key with the route set to NONE).
+#
+# Identity is keyed on the NORMALIZED (lowercased) email EVERYWHERE -- it is
+# the ownerId shares are stamped/scoped by, the raterEmail on ratings/heard,
+# and the admin check. `userId` (Spotify id) is available on the verified
+# payload but is NOT the owner key. The extractor ingest route uses a
+# *different* mechanism entirely (a scoped SSM bearer key / per-user ingest
+# token, see resolve_ingest_owner below) -- it never carries a caller JWT.
 
+def get_caller_owner(event: dict) -> str:
+    """
+    Resolve the caller's ownerId -- the NORMALIZED (lowercased) email from the
+    verified xomify token. This is the single identity every authed handler
+    keys on (owner stamping/scoping, ratings/heard raterEmail, admin check).
+
+    Raises AuthorizationError (HTTP 401) on any token failure (missing,
+    malformed, bad signature, expired, or missing email/userId claim).
+    """
+    from lambdas.common.xomify_auth import verify_xomify_token
+
+    return verify_xomify_token(event)["email"]
+
+
+# Back-compat alias: handlers historically read `get_caller_email` for the
+# raterEmail / admin identity. Under WS-AUTH the caller email IS the ownerId
+# (normalized), so this returns the same value as get_caller_owner.
 def get_caller_email(event: dict) -> str:
-    """
-    Resolve the caller's email from the Cognito authorizer claims.
-
-    Raises MissingCallerIdentityError (HTTP 401) if absent -- callers on
-    authed routes are always expected to have passed through the
-    COGNITO_USER_POOLS authorizer first.
-    """
-    from lambdas.common.errors import MissingCallerIdentityError
-
-    request_context = event.get("requestContext") or {}
-    authorizer = request_context.get("authorizer") if isinstance(request_context, dict) else None
-    claims = authorizer.get("claims") if isinstance(authorizer, dict) else None
-    if isinstance(claims, dict):
-        email = claims.get("email")
-        if isinstance(email, str) and email:
-            return email
-
-    raise MissingCallerIdentityError(field="email")
-
-
-def get_caller_sub(event: dict) -> Optional[str]:
-    """
-    Resolve the caller's Cognito `sub` (stable user id) from the authorizer
-    claims, or None if absent. Unlike get_caller_email this does NOT raise --
-    the sub is stored alongside the email on the user-link row as a durable,
-    rename-proof identifier, but email is the record key and the required
-    identity. Callers that need identity should still use get_caller_email.
-    """
-    request_context = event.get("requestContext") or {}
-    authorizer = request_context.get("authorizer") if isinstance(request_context, dict) else None
-    claims = authorizer.get("claims") if isinstance(authorizer, dict) else None
-    if isinstance(claims, dict):
-        sub = claims.get("sub")
-        if isinstance(sub, str) and sub:
-            return sub
-    return None
+    """Alias of get_caller_owner -- the caller's normalized email (== ownerId)."""
+    return get_caller_owner(event)
 
 
 def require_admin(event: dict) -> str:
     """
-    Resolve the caller's Cognito email AND assert it is the configured admin
-    (Dom). Gates the /admin/* routes on top of the native COGNITO_USER_POOLS
-    authorizer -- any signed-in Xomware member passes the authorizer, but only
-    the admin may list/approve/deny link requests.
+    Resolve the caller's verified email AND assert it is the configured admin
+    (Dom). Gates the /admin/* routes on top of the in-handler xomify-token
+    check -- any xomify user passes token verification, but only the admin may
+    list/approve/deny link requests.
 
-    Returns the admin email on success. Raises MissingCallerIdentityError (401)
-    if there is no caller identity, or ForbiddenError (403) if the caller is
-    signed in but is not the admin.
+    Returns the admin email on success. Raises AuthorizationError (401) if
+    there is no valid caller token, or ForbiddenError (403) if the caller is
+    authenticated but is not the admin.
     """
     from lambdas.common.constants import ADMIN_EMAIL
     from lambdas.common.errors import ForbiddenError

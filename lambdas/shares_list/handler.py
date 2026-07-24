@@ -23,8 +23,7 @@ from lambdas.common.shares_dynamo import (
     query_shares_by_owner_direction,
 )
 from lambdas.common.utility_helpers import (
-    get_caller_email,
-    get_caller_sub,
+    get_caller_owner,
     get_query_params,
     success_response,
 )
@@ -51,10 +50,10 @@ def _since_epoch_for_window(window: str) -> int:
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    # Authed route -- raises MissingCallerIdentityError (401) if the
-    # custom authorizer context is absent. The caller email also drives
-    # each share's rating.myRating below.
-    email = get_caller_email(event)
+    # Authed route -- raises AuthorizationError (401) if the caller's xomify
+    # token is missing/invalid. The verified email is BOTH the ownerId used for
+    # owner-scoping below AND drives each share's rating.myRating.
+    email = get_caller_owner(event)
 
     params = get_query_params(event)
     direction = params.get("direction")
@@ -79,15 +78,14 @@ def handler(event: dict, context: Any) -> dict:
     since_epoch = _since_epoch_for_window(window)
 
     # Read cutover (Phase 1C), flag-gated for instant rollback. When owner
-    # scoping is ON we scope the feed to the CALLER'S OWN ownerId (Cognito sub)
-    # via GSI-3 -- for Dom (caller sub == the owner stamped on every row) the
-    # result set is IDENTICAL to the legacy GSI-1 direction query (proven by the
-    # parity test); a second user sees only their own shares. If the flag is OFF,
-    # or the caller somehow has no sub, we fall back to the legacy GSI-1 path so
-    # the feed can never break. Flip OWNER_SCOPING_ENABLED off = instant revert.
-    caller_sub = get_caller_sub(event)
-    if OWNER_SCOPING_ENABLED and caller_sub:
-        shares = query_shares_by_owner_direction(caller_sub, direction, since_epoch)
+    # scoping is ON we scope the feed to the CALLER'S OWN ownerId (their
+    # normalized email) via GSI-3 -- for Dom (caller email == the owner stamped
+    # on every row post-migration) the result set is IDENTICAL to the legacy
+    # GSI-1 direction query (proven by the parity test); a second user sees only
+    # their own shares. If the flag is OFF we fall back to the legacy GSI-1 path
+    # so the feed can never break. Flip OWNER_SCOPING_ENABLED off = instant revert.
+    if OWNER_SCOPING_ENABLED and email:
+        shares = query_shares_by_owner_direction(email, direction, since_epoch)
     else:
         shares = query_shares_by_direction(direction, since_epoch)
 

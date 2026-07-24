@@ -33,8 +33,7 @@ from lambdas.common.models import SpotifyCallbackRequest
 from lambdas.common.spotify_oauth import exchange_code, fetch_spotify_user_id
 from lambdas.common.user_links import get_user_record
 from lambdas.common.utility_helpers import (
-    get_caller_email,
-    get_caller_sub,
+    get_caller_owner,
     parse_body,
     success_response,
 )
@@ -77,17 +76,11 @@ def secrets_compare(a: str, b: str) -> bool:
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    # Authed route -- 401 if the Cognito authorizer context is absent.
-    email = get_caller_email(event)
-    owner_id = get_caller_sub(event)
-    if not owner_id:
-        # ownerId (Cognito sub) is what every owner-scoped consumer keys by --
-        # refuse to store a connection we can't attribute to an owner.
-        raise AuthorizationError(
-            message="Caller has no Cognito sub; cannot attribute Spotify connection.",
-            handler=HANDLER,
-            function="handler",
-        )
+    # Authed route -- 401 if the caller's xomify token is missing/invalid. The
+    # verified email IS the ownerId every owner-scoped consumer keys by, and the
+    # key of the caller's own xomtracks-users row.
+    email = get_caller_owner(event)
+    owner_id = email
 
     body = parse_body(event)
     try:

@@ -82,8 +82,18 @@ def __getattr__(name: str) -> str:
         # (auth_spotify_callback) always use the SAME value Spotify has
         # registered (Spotify requires an exact match on both calls).
         'SPOTIFY_REDIRECT_URI': f'{__SPOTIFY_ROOT}REDIRECT_URI',
-        # HS256 signing key for auth_login's per-user JWT.
+        # HS256 signing key for auth_login's per-user JWT (xomtracks' OWN,
+        # legacy -- see auth_login/handler.py).
         'API_SECRET_KEY': f'{__API_ROOT}API_SECRET_KEY',
+        # XOMIFY's HS256 signing key -- the CROSS-NAMESPACE secret xomify signs
+        # its user JWTs with (claims `email` + `userId`). WS-AUTH re-bases
+        # xomtracks' identity onto xomify's token: verify_xomify_token
+        # (lambdas/common/xomify_auth.py) decodes the caller's Bearer JWT with
+        # THIS key. Absolute /xomify/* path (not under __API_ROOT) -- the lambda
+        # role grants cross-namespace ssm:GetParameter on it (see
+        # xomtracks-infrastructure iam_lambda.tf). Rotation of xomify's key now
+        # couples both apps -- documented, accepted (PLAN.md WS-AUTH).
+        'XOMIFY_API_SECRET_KEY': '/xomify/api/API_SECRET_KEY',
         # Scoped bearer key the extractor sends to POST /shares/ingest.
         'INGEST_BEARER_KEY': f'{__INGEST_ROOT}BEARER_KEY',
         # Scraped SoundCloud client_id (xomcloud pattern) -- used to
