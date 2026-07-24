@@ -23,7 +23,12 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
 
-from lambdas.common.constants import SHARES_TABLE_NAME, SHARES_DIRECTION_INDEX, SHARES_SHARER_INDEX
+from lambdas.common.constants import (
+    SHARES_TABLE_NAME,
+    SHARES_DIRECTION_INDEX,
+    SHARES_SHARER_INDEX,
+    SHARES_OWNER_DIRECTION_INDEX,
+)
 from lambdas.common.errors import DynamoDBError
 from lambdas.common.logger import get_logger
 
@@ -61,6 +66,34 @@ def derive_share_id(message_guid: str, source_url: str) -> str:
     return str(uuid.uuid5(_SHARE_ID_NAMESPACE, key))
 
 
+def compute_owner_direction(owner_id: str | None, direction: str | None) -> str | None:
+    """
+    Derive the GSI-3 hash key `<ownerId>#<direction>` for an owner-scoped share.
+
+    Returns None when either input is absent -- a legacy (unowned) write then
+    omits ownerDirection entirely, keeping GSI-3 sparse (same rationale as
+    _strip_none for the GSI-2 sharerHandle key). Multi-tenant Phase 1.
+    """
+    if not owner_id or not direction:
+        return None
+    return f"{owner_id}#{direction}"
+
+
+def _apply_owner_direction(item: dict) -> dict:
+    """
+    Ensure `ownerDirection` is consistent with `ownerId` + `direction` on write.
+
+    When an ownerId is present we always (re)derive ownerDirection so the GSI-3
+    key can never drift from the record. When ownerId is absent the record stays
+    legacy/unowned and ownerDirection is left off (and _strip_none drops any
+    None). Returns a shallow copy -- never mutates the caller's dict.
+    """
+    owner_direction = compute_owner_direction(item.get("ownerId"), item.get("direction"))
+    if owner_direction is None:
+        return item
+    return {**item, "ownerDirection": owner_direction}
+
+
 def _strip_none(item: dict) -> dict:
     """
     Drop None-valued attributes before writing to DynamoDB.
@@ -85,7 +118,7 @@ def put_share_idempotent(share: dict) -> tuple[dict, bool]:
         (idempotent re-ingest, not an error).
     """
     table = _get_dynamodb().Table(SHARES_TABLE_NAME)
-    clean_share = _strip_none(share)
+    clean_share = _strip_none(_apply_owner_direction(share))
     try:
         table.put_item(
             Item=clean_share,
@@ -241,6 +274,43 @@ def query_shares_by_direction(direction: str, since_epoch: int) -> list[dict]:
     except Exception as err:
         log.error(f"Query shares by direction failed: {err}")
         raise DynamoDBError(message=str(err), function="query_shares_by_direction", table=SHARES_TABLE_NAME)
+
+
+def query_shares_by_owner_direction(owner_id: str, direction: str, since_epoch: int) -> list[dict]:
+    """
+    Query all shares owned by `owner_id` in a direction ('in' | 'out') with
+    messageDate >= since_epoch, via GSI-3 (ownerDirection-messageDate-index).
+
+    The OWNER-SCOPED analogue of query_shares_by_direction (GSI-1). For the sole
+    legacy owner (Dom) the returned set is IDENTICAL to the GSI-1 query once the
+    ownerId backfill has stamped every row -- proven by the parity test. A second
+    owner gets only their own shares. `query_shares_by_direction` is left intact
+    as the instant-rollback read path (flip OWNER_SCOPING_ENABLED off).
+    """
+    owner_direction = compute_owner_direction(owner_id, direction)
+    if owner_direction is None:
+        return []
+    try:
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
+        items: list[dict] = []
+        kwargs = {
+            "IndexName": SHARES_OWNER_DIRECTION_INDEX,
+            "KeyConditionExpression": Key("ownerDirection").eq(owner_direction)
+            & Key("messageDate").gte(since_epoch),
+        }
+        while True:
+            res = table.query(**kwargs)
+            items.extend(res.get("Items", []))
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
+    except Exception as err:
+        log.error(f"Query shares by owner direction failed: {err}")
+        raise DynamoDBError(
+            message=str(err), function="query_shares_by_owner_direction", table=SHARES_TABLE_NAME
+        )
 
 
 def query_shares_by_sharer(sharer_handle: str, since_epoch: int) -> list[dict]:

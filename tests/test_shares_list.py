@@ -11,7 +11,14 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from lambdas.common.constants import SHARES_TABLE_NAME, SHARES_DIRECTION_INDEX, SHARES_SHARER_INDEX
+from lambdas.common.constants import (
+    SHARES_TABLE_NAME,
+    SHARES_DIRECTION_INDEX,
+    SHARES_SHARER_INDEX,
+    SHARES_OWNER_DIRECTION_INDEX,
+)
+
+DOM_SUB = "sub-dom-owner"
 
 
 def _create_table():
@@ -24,6 +31,7 @@ def _create_table():
             {"AttributeName": "direction", "AttributeType": "S"},
             {"AttributeName": "messageDate", "AttributeType": "N"},
             {"AttributeName": "sharerHandle", "AttributeType": "S"},
+            {"AttributeName": "ownerDirection", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -39,6 +47,15 @@ def _create_table():
                 "IndexName": SHARES_SHARER_INDEX,
                 "KeySchema": [
                     {"AttributeName": "sharerHandle", "KeyType": "HASH"},
+                    {"AttributeName": "messageDate", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            },
+            {
+                "IndexName": SHARES_OWNER_DIRECTION_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "ownerDirection", "KeyType": "HASH"},
                     {"AttributeName": "messageDate", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
@@ -75,6 +92,97 @@ def seeded_table():
             "messageDate": now - 3600, "matchStatus": "matched", "createdAt": "x",
         })
         yield table
+
+
+@pytest.fixture
+def owned_table():
+    """Same shape as seeded_table but every row is owner-stamped for Dom
+    (ownerId + ownerDirection) -- the post-backfill state used to exercise the
+    Phase 1C owner-scoping flag + parity."""
+    with mock_aws():
+        table = _create_table()
+        now = int(time.time())
+        rows = [
+            {"shareId": "s1", "messageGuid": "g1", "direction": "in", "sharerHandle": "+1",
+             "sourceUrl": "url1", "messageDate": now - 3600},
+            {"shareId": "s2", "messageGuid": "g2", "direction": "in", "sharerHandle": "+1",
+             "sourceUrl": "url2", "messageDate": now - (60 * 24 * 3600)},
+            {"shareId": "s3", "messageGuid": "g3", "direction": "out",
+             "sourceUrl": "url3", "messageDate": now - 3600},
+        ]
+        for r in rows:
+            r.update({
+                "ownerId": DOM_SUB,
+                "ownerDirection": f"{DOM_SUB}#{r['direction']}",
+                "chatId": "c1", "platform": "spotify",
+                "matchStatus": "matched", "createdAt": "x",
+            })
+            table.put_item(Item=r)
+        yield table
+
+
+def _authed_with_sub(email: str, sub: str, **qs) -> dict:
+    return {
+        "httpMethod": "GET", "path": "/shares", "headers": {}, "body": None,
+        "isBase64Encoded": False,
+        "queryStringParameters": qs or None,
+        "requestContext": {"authorizer": {"claims": {"email": email, "sub": sub}}},
+    }
+
+
+class TestSharesListOwnerScoping:
+    """Phase 1C read cutover -- flag-gated, GSI-1 legacy path is the rollback."""
+
+    def test_flag_on_scopes_to_caller_owner(self, owned_table, monkeypatch, mock_context):
+        import lambdas.shares_list.handler as h
+
+        monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
+        event = _authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all")
+        response = h.handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        assert {s["messageGuid"] for s in body["data"]["shares"]} == {"g1", "g2"}
+
+    def test_flag_on_parity_with_legacy_for_owner(self, owned_table, monkeypatch, mock_context):
+        """The load-bearing guarantee: with the flag ON, Dom's feed is IDENTICAL
+        to the legacy GSI-1 path with the flag OFF."""
+        import lambdas.shares_list.handler as h
+
+        monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", False)
+        legacy = json.loads(
+            h.handler(_authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all"),
+                      mock_context)["body"]
+        )["data"]["shares"]
+
+        monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
+        owned = json.loads(
+            h.handler(_authed_with_sub("dom@example.com", DOM_SUB, direction="in", window="all"),
+                      mock_context)["body"]
+        )["data"]["shares"]
+
+        assert {s["shareId"] for s in owned} == {s["shareId"] for s in legacy}
+
+    def test_flag_on_second_user_gets_empty_feed(self, owned_table, monkeypatch, mock_context):
+        import lambdas.shares_list.handler as h
+
+        monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", True)
+        event = _authed_with_sub("friend@example.com", "sub-friend", direction="in", window="all")
+        response = h.handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        assert body["data"]["shares"] == []
+
+    def test_flag_off_uses_legacy_path_for_everyone(self, owned_table, monkeypatch, mock_context):
+        # Flag OFF: even a different caller sub sees the global direction feed
+        # (Dom-only pre-multi-tenant behavior) -- the instant-rollback path.
+        import lambdas.shares_list.handler as h
+
+        monkeypatch.setattr(h, "OWNER_SCOPING_ENABLED", False)
+        event = _authed_with_sub("friend@example.com", "sub-friend", direction="in", window="all")
+        response = h.handler(event, mock_context)
+        body = json.loads(response["body"])
+
+        assert {s["messageGuid"] for s in body["data"]["shares"]} == {"g1", "g2"}
 
 
 class TestSharesListAuth:

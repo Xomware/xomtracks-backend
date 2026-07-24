@@ -15,7 +15,12 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from lambdas.common.constants import SHARES_TABLE_NAME, SHARES_DIRECTION_INDEX, SHARES_SHARER_INDEX
+from lambdas.common.constants import (
+    SHARES_TABLE_NAME,
+    SHARES_DIRECTION_INDEX,
+    SHARES_SHARER_INDEX,
+    SHARES_OWNER_DIRECTION_INDEX,
+)
 
 
 def _create_table():
@@ -28,6 +33,7 @@ def _create_table():
             {"AttributeName": "direction", "AttributeType": "S"},
             {"AttributeName": "messageDate", "AttributeType": "N"},
             {"AttributeName": "sharerHandle", "AttributeType": "S"},
+            {"AttributeName": "ownerDirection", "AttributeType": "S"},
         ],
         GlobalSecondaryIndexes=[
             {
@@ -43,6 +49,15 @@ def _create_table():
                 "IndexName": SHARES_SHARER_INDEX,
                 "KeySchema": [
                     {"AttributeName": "sharerHandle", "KeyType": "HASH"},
+                    {"AttributeName": "messageDate", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+                "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+            },
+            {
+                "IndexName": SHARES_OWNER_DIRECTION_INDEX,
+                "KeySchema": [
+                    {"AttributeName": "ownerDirection", "KeyType": "HASH"},
                     {"AttributeName": "messageDate", "KeyType": "RANGE"},
                 ],
                 "Projection": {"ProjectionType": "ALL"},
@@ -235,6 +250,123 @@ class TestScanByNormalizedHandles:
 
         self._seed(put_share_idempotent, sample_share)
         assert scan_shares_by_normalized_handles(set()) == []
+
+
+class TestOwnerDirection:
+    """Phase 1 multi-tenant re-key: ownerDirection (`<ownerId>#<direction>`) is
+    derived on write and drives the owner-scoped GSI-3 query."""
+
+    def test_compute_owner_direction(self):
+        from lambdas.common.shares_dynamo import compute_owner_direction
+
+        assert compute_owner_direction("sub-abc", "in") == "sub-abc#in"
+        assert compute_owner_direction("sub-abc", "out") == "sub-abc#out"
+
+    def test_compute_owner_direction_none_when_unowned(self):
+        from lambdas.common.shares_dynamo import compute_owner_direction
+
+        assert compute_owner_direction(None, "in") is None
+        assert compute_owner_direction("sub-abc", None) is None
+
+    def test_write_derives_owner_direction(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import put_share_idempotent, derive_share_id
+        import boto3 as _boto3
+
+        share = dict(sample_share)
+        share["ownerId"] = "sub-abc"
+        share["direction"] = "in"
+        share["shareId"] = derive_share_id("go", "urlo")
+        share["messageGuid"] = "go"
+        share["sourceUrl"] = "urlo"
+        put_share_idempotent(share)
+
+        table = _boto3.resource("dynamodb", region_name="us-east-1").Table(SHARES_TABLE_NAME)
+        stored = table.get_item(Key={"shareId": share["shareId"]})["Item"]
+        assert stored["ownerDirection"] == "sub-abc#in"
+
+    def test_write_without_owner_omits_owner_direction(self, ddb_table, sample_share):
+        # Legacy/unowned write -- ownerDirection must be absent (sparse GSI-3).
+        from lambdas.common.shares_dynamo import put_share_idempotent, derive_share_id
+        import boto3 as _boto3
+
+        share = dict(sample_share)
+        share.pop("ownerId", None)
+        share["shareId"] = derive_share_id("gl", "urll")
+        share["messageGuid"] = "gl"
+        share["sourceUrl"] = "urll"
+        put_share_idempotent(share)
+
+        table = _boto3.resource("dynamodb", region_name="us-east-1").Table(SHARES_TABLE_NAME)
+        stored = table.get_item(Key={"shareId": share["shareId"]})["Item"]
+        assert "ownerDirection" not in stored
+
+    def test_query_by_owner_direction_scopes_to_owner(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import (
+            put_share_idempotent,
+            query_shares_by_owner_direction,
+            derive_share_id,
+        )
+
+        dom_in = dict(sample_share)
+        dom_in.update({"ownerId": "sub-dom", "direction": "in", "messageDate": 5000,
+                       "shareId": derive_share_id("d1", "u1"), "messageGuid": "d1", "sourceUrl": "u1"})
+        dom_out = dict(sample_share)
+        dom_out.update({"ownerId": "sub-dom", "direction": "out", "sharerHandle": None,
+                        "messageDate": 5000, "shareId": derive_share_id("d2", "u2"),
+                        "messageGuid": "d2", "sourceUrl": "u2"})
+        other_in = dict(sample_share)
+        other_in.update({"ownerId": "sub-other", "direction": "in", "messageDate": 5000,
+                         "shareId": derive_share_id("o1", "u3"), "messageGuid": "o1", "sourceUrl": "u3"})
+        for s in (dom_in, dom_out, other_in):
+            put_share_idempotent(s)
+
+        dom_shares = query_shares_by_owner_direction("sub-dom", "in", since_epoch=0)
+        assert {s["messageGuid"] for s in dom_shares} == {"d1"}
+
+        other_shares = query_shares_by_owner_direction("sub-other", "in", since_epoch=0)
+        assert {s["messageGuid"] for s in other_shares} == {"o1"}
+
+    def test_query_by_owner_direction_respects_since_epoch(self, ddb_table, sample_share):
+        from lambdas.common.shares_dynamo import (
+            put_share_idempotent,
+            query_shares_by_owner_direction,
+            derive_share_id,
+        )
+
+        old = dict(sample_share)
+        old.update({"ownerId": "sub-dom", "direction": "in", "messageDate": 1000,
+                    "shareId": derive_share_id("a", "ua"), "messageGuid": "a", "sourceUrl": "ua"})
+        new = dict(sample_share)
+        new.update({"ownerId": "sub-dom", "direction": "in", "messageDate": 9000,
+                    "shareId": derive_share_id("b", "ub"), "messageGuid": "b", "sourceUrl": "ub"})
+        for s in (old, new):
+            put_share_idempotent(s)
+
+        results = query_shares_by_owner_direction("sub-dom", "in", since_epoch=5000)
+        assert {s["messageGuid"] for s in results} == {"b"}
+
+    def test_parity_owner_scoped_matches_legacy_for_single_owner(self, ddb_table, sample_share):
+        """The load-bearing Phase 1C guarantee: for the sole owner (Dom), the
+        owner-scoped GSI-3 query returns the EXACT same set as the legacy GSI-1
+        direction query once every row is owned."""
+        from lambdas.common.shares_dynamo import (
+            put_share_idempotent,
+            query_shares_by_direction,
+            query_shares_by_owner_direction,
+            derive_share_id,
+        )
+
+        for i in range(5):
+            s = dict(sample_share)
+            s.update({"ownerId": "sub-dom", "direction": "in", "messageDate": 1000 + i,
+                      "shareId": derive_share_id(f"g{i}", f"u{i}"),
+                      "messageGuid": f"g{i}", "sourceUrl": f"u{i}"})
+            put_share_idempotent(s)
+
+        legacy = query_shares_by_direction("in", since_epoch=0)
+        owned = query_shares_by_owner_direction("sub-dom", "in", since_epoch=0)
+        assert {s["shareId"] for s in owned} == {s["shareId"] for s in legacy}
+        assert len(owned) == len(legacy) == 5
 
 
 class TestQueryBySharer:

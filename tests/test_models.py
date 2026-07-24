@@ -27,6 +27,21 @@ class TestShareIngestRequest:
         )
         assert req.direction == "in"
         assert req.platform == "spotify"
+        # Owner key is optional at the boundary -- extractor never sends it.
+        assert req.ownerId is None
+        assert req.ownerDirection is None
+
+    def test_accepts_optional_owner_fields(self):
+        req = ShareIngestRequest(
+            messageGuid="guid-1",
+            direction="in",
+            platform="spotify",
+            sourceUrl="https://open.spotify.com/track/abc",
+            messageDate=1753000000,
+            ownerId="sub-abc",
+            ownerDirection="sub-abc#in",
+        )
+        assert req.ownerId == "sub-abc"
 
     def test_direction_out_allows_null_sharer_handle(self):
         # is_from_me=1 -> direction=out -> Dom is the sender, no handle.
@@ -118,6 +133,20 @@ class TestShare:
         sample_share["genres"] = ["indie rock", "art pop"]
         share = Share(**sample_share)
         assert share.genres == ["indie rock", "art pop"]
+
+    # --- Multi-tenant Phase 1: optional owner key round-trips both ways ---
+    def test_owner_fields_default_none(self, sample_share):
+        # Legacy row (no owner) still validates -- back-compat expand step.
+        share = Share(**sample_share)
+        assert share.ownerId is None
+        assert share.ownerDirection is None
+
+    def test_owner_fields_round_trip(self, sample_share):
+        sample_share["ownerId"] = "sub-abc"
+        sample_share["ownerDirection"] = "sub-abc#in"
+        share = Share(**sample_share)
+        assert share.ownerId == "sub-abc"
+        assert share.ownerDirection == "sub-abc#in"
 
 
 class TestMatchOverrideRequest:
