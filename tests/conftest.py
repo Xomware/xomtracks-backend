@@ -46,6 +46,7 @@ from lambdas.common import ssm_helpers as _ssm_helpers  # noqa: E402
 _ssm_helpers._ssm_cache.update({
     '/xomtracks/spotify/CLIENT_ID': 'test-spotify-client-id',
     '/xomtracks/spotify/CLIENT_SECRET': 'test-spotify-client-secret',
+    '/xomtracks/spotify/REDIRECT_URI': 'https://xomtracks.xomware.com/callback',
     '/xomtracks/api/API_SECRET_KEY': 'test-api-secret-key',
     '/xomtracks/ingest/BEARER_KEY': 'test-ingest-key',
     '/xomtracks/soundcloud/CLIENT_ID': 'test-soundcloud-client-id',

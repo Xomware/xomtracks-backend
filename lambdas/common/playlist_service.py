@@ -17,7 +17,10 @@ decision -- Playlist defaults public=True).
 import aiohttp
 
 from lambdas.common.constants import PLAYLIST_ID_UNSET
-from lambdas.common.dynamo_helpers import get_app_service_user
+from lambdas.common.dynamo_helpers import (
+    get_app_service_user,
+    get_spotify_user_by_owner,
+)
 from lambdas.common.logger import get_logger
 from lambdas.common.logo import XOMTRACKS_LOGO_BASE_64
 from lambdas.common.playlist import Playlist
@@ -62,6 +65,60 @@ async def build_service_client(session: aiohttp.ClientSession) -> tuple[Spotify,
     spotify = Spotify(user, session)
     await spotify.aiohttp_initialize_user_token()
     return spotify, user.get("userId", "")
+
+
+def _user_id_from_row(row: dict) -> str:
+    """The Spotify account id a connected row builds playlists under. Prefers
+    `userId` (what the vendored clients read) then the explicit spotifyUserId."""
+    return row.get("userId") or row.get("spotifyUserId") or ""
+
+
+async def _client_from_row(session: aiohttp.ClientSession, row: dict) -> tuple[Spotify, str]:
+    spotify = Spotify(row, session)
+    await spotify.aiohttp_initialize_user_token()
+    return spotify, _user_id_from_row(row)
+
+
+async def build_owner_client(
+    session: aiohttp.ClientSession, owner_id: str
+) -> tuple[Spotify, str, bool]:
+    """
+    Build a Spotify client for a given ownerId (Cognito sub) -- Phase 2.
+
+    Uses the owner's OWN connected row (their OAuth refresh token) when they've
+    connected; otherwise falls back to the shared service account (Dom's seeded
+    token) so an un-connected owner -- including Dom before he re-connects --
+    keeps working exactly as today.
+
+    Returns (spotify, user_id, is_service_fallback). `is_service_fallback` lets
+    callers pick the right playlist-id store (per-row vs the legacy SSM params).
+    """
+    row = get_spotify_user_by_owner(owner_id)
+    if row and row.get("refreshToken"):
+        spotify, user_id = await _client_from_row(session, row)
+        return spotify, user_id, False
+    spotify, user_id = await build_service_client(session)
+    return spotify, user_id, True
+
+
+async def build_client_by_email(
+    session: aiohttp.ClientSession, email: str
+) -> tuple[Spotify, str, bool]:
+    """
+    Build a Spotify client for a caller identified by Cognito email (the
+    /playlists/create path -- the caller's identity is their email at request
+    time). Uses the caller's connected row if present, else the service account.
+
+    Returns (spotify, user_id, is_service_fallback).
+    """
+    from lambdas.common.user_links import get_user_record
+
+    row = get_user_record(email)
+    if row and row.get("refreshToken"):
+        spotify, user_id = await _client_from_row(session, row)
+        return spotify, user_id, False
+    spotify, user_id = await build_service_client(session)
+    return spotify, user_id, True
 
 
 async def _reassert_cover(playlist: Playlist, image: str | None) -> None:
@@ -141,13 +198,22 @@ async def create_playlist(
     description: str,
     uris: list[str],
     *,
+    owner_email: str | None = None,
     image: str | None = XOMTRACKS_LOGO_BASE_64,
 ) -> str:
     """
-    One-shot: build the service client and create a fresh public playlist
+    One-shot: build a client for the CALLER (their own Spotify if connected,
+    else the service account fallback) and create a fresh public playlist
     (on-the-spot endpoint path). Returns the new playlist id.
+
+    Phase 2: when `owner_email` is given the playlist is created on that caller's
+    connected account; otherwise (or if they haven't connected) it falls back to
+    the shared service account -- preserving the pre-OAuth behavior.
     """
-    spotify, user_id = await build_service_client(session)
+    if owner_email:
+        spotify, user_id, _is_fallback = await build_client_by_email(session, owner_email)
+    else:
+        spotify, user_id = await build_service_client(session)
     return await upsert_playlist(
         session,
         spotify,

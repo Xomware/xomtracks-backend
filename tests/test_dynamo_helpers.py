@@ -66,3 +66,58 @@ class TestGetAppServiceUser:
 
         with pytest.raises(NotFoundError):
             get_app_service_user()
+
+
+class TestSpotifyConnection:
+    """Per-user Spotify connection storage/lookup (self-serve Phase 2)."""
+
+    def test_store_connection_and_lookup_by_owner(self, users_table):
+        from lambdas.common.dynamo_helpers import (
+            get_spotify_user_by_owner,
+            store_spotify_connection,
+        )
+
+        store_spotify_connection("dom@example.com", "sub-dom", "RT-dom", "spotify-dom")
+
+        row = get_spotify_user_by_owner("sub-dom")
+        assert row is not None
+        assert row["email"] == "dom@example.com"
+        assert row["refreshToken"] == "RT-dom"
+        assert row["ownerId"] == "sub-dom"
+        assert row["spotifyUserId"] == "spotify-dom"
+        # userId mirrors the spotify id so the vendored clients read it unchanged
+        assert row["userId"] == "spotify-dom"
+
+    def test_lookup_unknown_owner_is_none(self, users_table):
+        from lambdas.common.dynamo_helpers import get_spotify_user_by_owner
+        assert get_spotify_user_by_owner("nobody") is None
+
+    def test_list_connected_users_only_returns_rows_with_token(self, users_table):
+        from lambdas.common.dynamo_helpers import (
+            list_spotify_connected_users,
+            store_spotify_connection,
+        )
+
+        # a plain link row (no refreshToken) must NOT appear
+        users_table.put_item(Item={"email": "linkonly@example.com", "linkedHandles": {"+13360001111"}})
+        store_spotify_connection("a@example.com", "sub-a", "RT-a", "sp-a")
+        store_spotify_connection("b@example.com", "sub-b", "RT-b", "sp-b")
+
+        connected = list_spotify_connected_users()
+        emails = {r["email"] for r in connected}
+        assert emails == {"a@example.com", "b@example.com"}
+
+    def test_store_auth_state_then_connection_clears_it(self, users_table):
+        from lambdas.common.dynamo_helpers import (
+            store_spotify_auth_state,
+            store_spotify_connection,
+        )
+
+        store_spotify_auth_state("dom@example.com", "STATE1", 9999999999)
+        row = users_table.get_item(Key={"email": "dom@example.com"})["Item"]
+        assert row["spotifyAuthState"] == "STATE1"
+
+        store_spotify_connection("dom@example.com", "sub-dom", "RT", "sp")
+        row = users_table.get_item(Key={"email": "dom@example.com"})["Item"]
+        assert "spotifyAuthState" not in row
+        assert row["refreshToken"] == "RT"
