@@ -42,7 +42,7 @@ class TestHandler:
         )
         captured = {}
 
-        async def fake_create(session, name, description, uris):
+        async def fake_create(session, name, description, uris, owner_email=None):
             captured["name"] = name
             captured["uris"] = uris
             captured["description"] = description
@@ -70,7 +70,7 @@ class TestHandler:
         monkeypatch.setattr(H, "get_share", lambda sid: None)
         called = {"create": False}
 
-        async def fake_create(session, name, description, uris):
+        async def fake_create(session, name, description, uris, owner_email=None):
             called["create"] = True
             return "nope"
 
@@ -87,7 +87,7 @@ class TestHandler:
         )
         captured = {}
 
-        async def fake_create(session, name, description, uris):
+        async def fake_create(session, name, description, uris, owner_email=None):
             captured["uris"] = uris
             return "plid"
 

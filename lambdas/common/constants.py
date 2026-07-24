@@ -65,8 +65,46 @@ OWNER_SCOPING_ENABLED = os.environ.get('OWNER_SCOPING_ENABLED', 'false').strip()
 # per PLAN.md Option 3 -- this is NOT xomify's users table). A single row,
 # keyed by email, holds the refresh token the app plays/searches/builds
 # playlists through.
+#
+# Self-serve foundation Phase 2 (per-user Spotify OAuth): this same table now
+# ALSO holds a per-OWNER connected row -- keyed by the caller's Cognito email
+# (the SAME row user_links writes to), carrying their own `refreshToken`,
+# `spotifyUserId`, and `ownerId` (Cognito sub). The service-account row
+# (APP_SERVICE_USER_EMAIL) stays as Dom's FALLBACK until he re-connects via
+# OAuth, so his playlists/auto-heard never break. See docs/features/
+# xomtracks-selfserve/PLAN.md Phase 2.
 USERS_TABLE_NAME = os.environ.get('USERS_TABLE_NAME', '')
 APP_SERVICE_USER_EMAIL = os.environ.get('APP_SERVICE_USER_EMAIL', '')
+
+# ============================================
+# Spotify OAuth (per-user connect flow -- Phase 2)
+# ============================================
+# The Authorization-Code flow that replaces Dom's single hand-seeded service
+# token: POST /auth/spotify-login mints the authorize URL, the frontend sends
+# the user to Spotify, Spotify redirects back to SPOTIFY_REDIRECT_URI, and the
+# frontend POSTs {code, state} to /auth/spotify-callback which exchanges the
+# code for the owner's refresh token (confidential client -- CLIENT_SECRET stays
+# server-side in SSM). The redirect URI is read from SSM at runtime (must match
+# the value registered on the Spotify app dashboard EXACTLY). See ssm_helpers.
+#
+# SCOPES the connected token must carry, driven by what the consumers need:
+#   - playlist-modify-public / playlist-modify-private -> rolling + on-the-spot
+#     playlist create/replace (playlist_service).
+#   - ugc-image-upload -> the Xomtracks logo cover upload (playlist.py).
+#   - user-read-recently-played -> cron_auto_heard's /me/player/recently-played.
+# These must ALSO be added to the Spotify app dashboard (manual Dom step).
+SPOTIFY_OAUTH_SCOPES = (
+    'playlist-modify-public',
+    'playlist-modify-private',
+    'ugc-image-upload',
+    'user-read-recently-played',
+)
+
+# CSRF state lifetime: the window between POST /auth/spotify-login (which stamps
+# a random state on the caller's row) and POST /auth/spotify-callback (which must
+# present the same state). 10 minutes is plenty for a human to click through the
+# Spotify consent screen; an expired state forces a fresh /spotify-login.
+SPOTIFY_AUTH_STATE_TTL_SECONDS = int(os.environ.get('SPOTIFY_AUTH_STATE_TTL_SECONDS', '600'))
 
 # xomtracks-ratings: whole-group song ratings keyed per (track, user).
 # PK trackKey (normalized SONG identity, see track_key.derive_track_key),

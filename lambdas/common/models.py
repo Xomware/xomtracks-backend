@@ -144,6 +144,28 @@ class MatchOverrideRequest(BaseModel):
         return extract_spotify_track_id(v.strip())
 
 
+class SpotifyCallbackRequest(BaseModel):
+    """
+    POST /auth/spotify-callback -- the frontend posts the `code` + `state` it
+    received on the Spotify redirect back to SPOTIFY_REDIRECT_URI. `state` is the
+    CSRF token minted by /auth/spotify-login and stamped on the caller's row.
+    The handler exchanges the code (confidential client) and stores the owner's
+    refresh token. redirectUri is optional -- the server prefers its own SSM
+    value (which Spotify has registered); if supplied it must match.
+    """
+
+    code: str = Field(min_length=1)
+    state: str = Field(min_length=1)
+    redirectUri: str | None = None
+
+    @field_validator("code", "state")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip()
+
+
 class LinkPhoneRequest(BaseModel):
     """
     POST /me/link-phone -- a signed-in group member links their phone number

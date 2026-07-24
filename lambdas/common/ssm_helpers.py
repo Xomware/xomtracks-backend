@@ -76,6 +76,12 @@ def __getattr__(name: str) -> str:
         # PLAN.md Option 3, does not reuse xomify's SSM params.
         'SPOTIFY_CLIENT_ID': f'{__SPOTIFY_ROOT}CLIENT_ID',
         'SPOTIFY_CLIENT_SECRET': f'{__SPOTIFY_ROOT}CLIENT_SECRET',
+        # Per-user OAuth redirect URI (Phase 2) -- the frontend callback route
+        # Spotify redirects back to after consent. Read server-side so the
+        # authorize URL (auth_spotify_login) and the code exchange
+        # (auth_spotify_callback) always use the SAME value Spotify has
+        # registered (Spotify requires an exact match on both calls).
+        'SPOTIFY_REDIRECT_URI': f'{__SPOTIFY_ROOT}REDIRECT_URI',
         # HS256 signing key for auth_login's per-user JWT.
         'API_SECRET_KEY': f'{__API_ROOT}API_SECRET_KEY',
         # Scoped bearer key the extractor sends to POST /shares/ingest.

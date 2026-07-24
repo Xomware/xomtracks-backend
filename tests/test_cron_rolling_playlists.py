@@ -5,18 +5,24 @@ Covers the pure playable-URI selection (filter + newest-first + ordered
 dedup) and the orchestration (create -> persist id; update-in-place -> no
 re-persist; recreate-on-failure fallback). Network + SSM + Dynamo edges are
 patched -- no real AWS.
+
+OWNER_SCOPING_ENABLED defaults to false in the test env (conftest), so these
+exercise the single service/default-owner path (legacy GSI-1 + SSM ids) --
+Dom's exact pre-Phase-2 behavior. The per-owner iteration (scoping ON) is
+covered in test_cron_rolling_playlists_owners.py.
 """
 
 import lambdas.cron_rolling_playlists.handler as H
+from lambdas.common.constants import DEFAULT_OWNER_ID
 
 
 class _FakeSpotify:
     headers = {"Authorization": "Bearer AT"}
 
 
-def _fake_build_client():
-    async def _build(session):
-        return _FakeSpotify(), "user1"
+def _fake_build_owner_client():
+    async def _build(session, owner_id):
+        return _FakeSpotify(), "user1", True  # (spotify, user_id, is_service_fallback)
     return _build
 
 
@@ -31,19 +37,19 @@ class TestPlayableUris:
         ]
         monkeypatch.setattr(H, "query_shares_by_direction", lambda d, s: list(shares))
 
-        uris = H._playable_uris("in", 0)
+        uris = H._playable_uris(DEFAULT_OWNER_ID, "in", 0)
 
         # newest-first: 400(a) then 300(b); 100(a) is a dup, pending/unmatched dropped.
         assert uris == ["spotify:track:a", "spotify:track:b"]
 
     def test_empty_window_yields_no_uris(self, monkeypatch):
         monkeypatch.setattr(H, "query_shares_by_direction", lambda d, s: [])
-        assert H._playable_uris("out", 0) == []
+        assert H._playable_uris(DEFAULT_OWNER_ID, "out", 0) == []
 
 
 class TestRebuild:
     def _wire(self, monkeypatch, *, existing, upsert):
-        monkeypatch.setattr(H, "build_service_client", _fake_build_client())
+        monkeypatch.setattr(H, "build_owner_client", _fake_build_owner_client())
         monkeypatch.setattr(
             H, "query_shares_by_direction",
             lambda d, s: [{"matchStatus": "matched", "resolvedSpotifyUri": f"spotify:track:{d}", "messageDate": 1}],
@@ -54,6 +60,13 @@ class TestRebuild:
         monkeypatch.setattr(H, "upsert_playlist", upsert)
         return puts
 
+    def _playlists(self, result):
+        """Single service owner in these tests -> unwrap to its per-direction map."""
+        owners = result["owners"]
+        assert len(owners) == 1
+        assert owners[0]["ownerId"] == DEFAULT_OWNER_ID
+        return owners[0]["playlists"]
+
     def test_creates_both_and_persists_ids(self, monkeypatch):
         captured = []
 
@@ -63,7 +76,7 @@ class TestRebuild:
 
         puts = self._wire(monkeypatch, existing="unset", upsert=fake_upsert)
 
-        out = H.rebuild_rolling_playlists()["playlists"]
+        out = self._playlists(H.rebuild_rolling_playlists())
 
         assert set(out) == {"in", "out"}
         assert out["in"]["created"] is True and out["out"]["created"] is True
@@ -81,7 +94,7 @@ class TestRebuild:
 
         puts = self._wire(monkeypatch, existing="existing-id", upsert=fake_upsert)
 
-        out = H.rebuild_rolling_playlists()["playlists"]
+        out = self._playlists(H.rebuild_rolling_playlists())
 
         assert out["in"]["created"] is False
         assert out["in"]["playlistId"] == "existing-id"
@@ -99,7 +112,7 @@ class TestRebuild:
         monkeypatch.setattr(H, "playlist_exists", gone)
         puts = self._wire(monkeypatch, existing="stale-id", upsert=fake_upsert)
 
-        out = H.rebuild_rolling_playlists()["playlists"]
+        out = self._playlists(H.rebuild_rolling_playlists())
 
         assert out["in"]["playlistId"] == "fresh-id"
         assert out["in"]["created"] is True
@@ -137,4 +150,5 @@ class TestRebuild:
 
         self._wire(monkeypatch, existing="unset", upsert=fake_upsert)
         result = H.handler({}, mock_context)
-        assert "playlists" in result
+        assert "owners" in result
+        assert result["owners"][0]["ownerId"] == DEFAULT_OWNER_ID

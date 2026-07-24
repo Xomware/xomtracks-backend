@@ -5,14 +5,13 @@ Reads Dom's Spotify recently-played history and auto-marks the matching tracks
 heard for Dom, so the feed's "unheard" filter reflects what he has actually
 listened to without him tapping "heard" on every card.
 
-DOM-ONLY for now (documented fast-follow): the app has a SINGLE Spotify
-service-account token (Dom's, reused from xomify, stored in xomtracks-users).
-That token's `/me/player/recently-played` is DOM's listening history, so this
-cron can only auto-mark heard for Dom. Per-user Spotify OAuth -- which would let
-each member's recently-played auto-mark THEIR own heard state -- is the
-fast-follow. The heard rows are keyed by AUTO_HEARD_RATER_EMAIL (Dom's Cognito
-LOGIN email, NOT the Spotify service-account row email) so they surface in Dom's
-own feed filter.
+PER-USER (self-serve foundation Phase 2): each owner who connected their Spotify
+(a xomtracks-users row with a refreshToken) is auto-marked heard from THEIR OWN
+`/me/player/recently-played`, keyed to THEIR Cognito login email so it surfaces
+in THEIR feed filter. Dom, until he re-connects via OAuth, is served by the
+shared service account with heard rows keyed to AUTO_HEARD_RATER_EMAIL (his
+Cognito LOGIN email) -- identical to before. When OWNER_SCOPING_ENABLED is off
+the cron reverts to the single service/default owner (exact pre-Phase-2 path).
 
 SCOPE: `/me/player/recently-played` requires the `user-read-recently-played`
 scope on the service token. The reused xomify refresh token already carries it
@@ -37,11 +36,16 @@ from typing import Any, Callable
 
 import aiohttp
 
-from lambdas.common.constants import AUTO_HEARD_RATER_EMAIL
+from lambdas.common.constants import (
+    AUTO_HEARD_RATER_EMAIL,
+    DEFAULT_OWNER_ID,
+    OWNER_SCOPING_ENABLED,
+)
+from lambdas.common.dynamo_helpers import list_spotify_connected_users
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.heard_dynamo import set_heard
 from lambdas.common.logger import get_logger
-from lambdas.common.playlist_service import build_service_client
+from lambdas.common.playlist_service import build_owner_client
 
 log = get_logger(__file__)
 
@@ -107,34 +111,80 @@ def run_auto_heard(
     }
 
 
-async def _fetch_recently_played(limit: int = 50) -> list[dict]:
+def _auto_heard_owners() -> list[dict]:
+    """
+    The owners to auto-mark heard for this run -- Phase 2 (per-user OAuth).
+
+    Owner scoping ON: every connected owner (their OWN recently-played, keyed to
+    THEIR Cognito login email), plus Dom via the shared service account (rater =
+    AUTO_HEARD_RATER_EMAIL) if he hasn't connected via OAuth yet -- Dom served
+    exactly as today.
+
+    Owner scoping OFF: the single service/default owner only (rater =
+    AUTO_HEARD_RATER_EMAIL) -- an exact revert to the pre-multi-tenant cron.
+
+    Each entry: {ownerId, rater} where `rater` is the Cognito email the heard
+    rows are keyed by (so they surface in THAT user's own "unheard" filter).
+    """
+    if not OWNER_SCOPING_ENABLED:
+        return [{"ownerId": DEFAULT_OWNER_ID, "rater": AUTO_HEARD_RATER_EMAIL}]
+
+    owners: list[dict] = []
+    seen: set[str] = set()
+    for row in list_spotify_connected_users():
+        owner_id = row.get("ownerId")
+        rater = row.get("email")
+        if not owner_id or owner_id in seen or not rater:
+            continue
+        seen.add(owner_id)
+        owners.append({"ownerId": owner_id, "rater": rater})
+
+    if DEFAULT_OWNER_ID not in seen and AUTO_HEARD_RATER_EMAIL:
+        owners.append({"ownerId": DEFAULT_OWNER_ID, "rater": AUTO_HEARD_RATER_EMAIL})
+    return owners
+
+
+async def _fetch_recently_played_for_owners(owners: list[dict], limit: int = 50) -> list[tuple[str, list[dict]]]:
+    """Fetch each owner's recently-played via THEIR token (service fallback for Dom)."""
+    out: list[tuple[str, list[dict]]] = []
     async with aiohttp.ClientSession() as session:
-        spotify, _user_id = await build_service_client(session)
-        return await spotify.aiohttp_get_recently_played(limit=limit)
+        for owner in owners:
+            spotify, _user_id, _is_fallback = await build_owner_client(session, owner["ownerId"])
+            items = await spotify.aiohttp_get_recently_played(limit=limit)
+            out.append((owner["rater"], items))
+    return out
 
 
 def auto_mark_heard() -> dict:
     """Runnable core shared by the Lambda handler and local invocation."""
-    rater_email = AUTO_HEARD_RATER_EMAIL
-    if not rater_email:
-        # Fail loud: without a rater email the cron would write heard rows keyed
-        # to nobody, invisible to every user's filter. Alarm instead.
+    owners = _auto_heard_owners()
+    if not owners:
+        # Fail loud: no connected owner AND no configured rater email means every
+        # heard row would be keyed to nobody, invisible to every user's filter.
         raise ValidationError(
-            message="AUTO_HEARD_RATER_EMAIL is not configured",
+            message="No auto-heard owners resolved (no connected users, no AUTO_HEARD_RATER_EMAIL)",
             handler=HANDLER,
             function="auto_mark_heard",
             field="AUTO_HEARD_RATER_EMAIL",
         )
 
-    log.info(f"Auto-heard starting for rater {rater_email}")
-    items = asyncio.run(_fetch_recently_played())
+    log.info(f"Auto-heard starting for {len(owners)} owner(s)")
+    fetched = asyncio.run(_fetch_recently_played_for_owners(owners))
 
     def persist(track_key: str, email: str, played_at: int | None) -> None:
         set_heard(track_key, email, True, heard_at=played_at)
 
-    summary = run_auto_heard(items, rater_email, persist)
-    log.info(f"Auto-heard complete: processed={summary['processed']} marked={summary['marked']}")
-    return summary
+    summaries: list[dict] = []
+    total_processed = 0
+    total_marked = 0
+    for rater_email, items in fetched:
+        summary = run_auto_heard(items, rater_email, persist)
+        summaries.append(summary)
+        total_processed += summary["processed"]
+        total_marked += summary["marked"]
+
+    log.info(f"Auto-heard complete: owners={len(summaries)} processed={total_processed} marked={total_marked}")
+    return {"owners": summaries, "processed": total_processed, "marked": total_marked}
 
 
 @handle_errors(HANDLER)

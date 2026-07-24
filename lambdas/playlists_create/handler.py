@@ -73,8 +73,10 @@ def _default_description(name: str) -> str:
 
 @handle_errors(HANDLER)
 def handler(event: dict, context: Any) -> dict:
-    # Authed route -- 401 if the Cognito authorizer context is absent.
-    get_caller_email(event)
+    # Authed route -- 401 if the Cognito authorizer context is absent. The
+    # caller email also selects WHOSE Spotify the playlist is built on (Phase 2:
+    # the caller's own connected account, falling back to the service account).
+    caller_email = get_caller_email(event)
 
     body = parse_body(event)
     try:
@@ -105,7 +107,7 @@ def handler(event: dict, context: Any) -> dict:
 
     description = req.description or _default_description(req.name)
     playlist_id = asyncio.run(
-        _create(req.name, description, uris)
+        _create(req.name, description, uris, caller_email)
     )
 
     log.info(f"On-the-spot playlist created: {playlist_id} ({len(uris)} tracks, {len(skipped)} skipped)")
@@ -121,6 +123,6 @@ def handler(event: dict, context: Any) -> dict:
     )
 
 
-async def _create(name: str, description: str, uris: list[str]) -> str:
+async def _create(name: str, description: str, uris: list[str], owner_email: str) -> str:
     async with aiohttp.ClientSession() as session:
-        return await create_playlist(session, name, description, uris)
+        return await create_playlist(session, name, description, uris, owner_email=owner_email)
