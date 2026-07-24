@@ -27,6 +27,7 @@ import secrets
 import time
 
 import boto3
+from boto3.dynamodb.conditions import Attr
 
 from lambdas.common.constants import AWS_DEFAULT_REGION, INGEST_TOKENS_TABLE_NAME
 from lambdas.common.errors import DynamoDBError, NotFoundError
@@ -150,6 +151,44 @@ def _touch_last_used(token_hash: str) -> None:
         )
     except Exception as err:  # noqa: BLE001 -- non-fatal telemetry
         log.warning(f"Failed to stamp lastUsedAt for tokenHash={token_hash}: {err}")
+
+
+def owner_has_active_token(owner_id: str) -> bool:
+    """
+    True if `owner_id` has at least one NON-revoked ingest token.
+
+    Backs the `ownIngest` flag on GET /me/get -- a caller who has minted (and not
+    revoked) a token has set up their own extractor. The table is keyed by
+    tokenHash with no ownerId GSI, so this is a filtered Scan; that is fine at
+    friend-group scale (same rationale as the shares scans) and the row count here
+    is tiny (one-ish per onboarded user). Fails CLOSED to False on any error -- a
+    lookup hiccup must not falsely claim the caller self-serves.
+    """
+    if not owner_id:
+        return False
+    try:
+        res = _table().scan(
+            FilterExpression=Attr("ownerId").eq(owner_id) & Attr("revoked").ne(True),
+            ProjectionExpression="tokenHash",
+            Limit=1,
+        )
+        if res.get("Items"):
+            return True
+        # A Limit'd Scan can return an empty page with a continuation key even
+        # when a match exists further in -- follow the cursor until exhausted.
+        while res.get("LastEvaluatedKey"):
+            res = _table().scan(
+                FilterExpression=Attr("ownerId").eq(owner_id) & Attr("revoked").ne(True),
+                ProjectionExpression="tokenHash",
+                Limit=1,
+                ExclusiveStartKey=res["LastEvaluatedKey"],
+            )
+            if res.get("Items"):
+                return True
+        return False
+    except Exception as err:  # noqa: BLE001 -- non-critical flag, fail closed
+        log.error(f"owner_has_active_token lookup failed (returning False): {err}")
+        return False
 
 
 def revoke_token(owner_id: str, token_hash: str) -> dict:

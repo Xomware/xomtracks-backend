@@ -129,3 +129,27 @@ class TestMeShares:
 
         event = authorized_event(email="member@example.com", queryStringParameters={"window": "decade"})
         assert handler(event, mock_context)["statusCode"] == 400
+
+    def test_does_not_include_global_baseline_shares(self, tables, authorized_event, mock_context):
+        """WS6 scope decision: /me/shares stays caller-own -- it must NOT fold in
+        the always-on global baseline (Dom's shares) the way /shares/list does."""
+        from lambdas.common.constants import DEFAULT_OWNER_ID
+        from lambdas.common.user_links import link_phone
+        from lambdas.me_shares.handler import handler
+
+        # A Dom-owned (global baseline) share carrying a DIFFERENT handle.
+        tables.Table(SHARES_TABLE_NAME).put_item(Item={
+            "shareId": "dom-global", "messageGuid": "gdom", "direction": "in",
+            "sharerHandle": "+15550001111", "ownerId": DEFAULT_OWNER_ID,
+            "ownerDirection": f"{DEFAULT_OWNER_ID}#in", "platform": "spotify",
+            "sourceUrl": "udom", "messageDate": int(time.time()) - 60,
+            "matchStatus": "matched", "createdAt": "x",
+        })
+
+        link_phone("member@example.com", "3364042196")
+        event = authorized_event(email="member@example.com", queryStringParameters={"window": "all"})
+        data = json.loads(handler(event, mock_context)["body"])["data"]
+        ids = {s["shareId"] for s in data["shares"]}
+        # Only the caller's own handle-matched shares -- Dom's baseline is absent.
+        assert ids == {"s1", "s2"}
+        assert "dom-global" not in ids

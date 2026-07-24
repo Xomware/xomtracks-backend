@@ -14,6 +14,14 @@ chat -- which is exactly the attribution this feature promises.
 
 Unlinked callers get an empty list flagged linked=false so the UI prompts them
 to link their number instead of showing an empty feed.
+
+WS6 SCOPE DECISION (always-on global feed): this endpoint is deliberately NOT
+part of the global union. `/me/shares` answers "what did *I* share" -- it is the
+caller's OWN attribution, keyed on their linked handle. The always-on baseline
+(Dom's shares, DEFAULT_OWNER_ID) belongs only to the main browse feed
+(`GET /shares/list`), which mixes everyone's baseline for discovery. Folding
+Dom's shares in here would break the "mine" semantics (a friend would see Dom's
+shares under *their* name). So `/me/shares` stays strictly caller-scoped.
 """
 
 import time

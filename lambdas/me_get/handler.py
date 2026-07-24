@@ -16,13 +16,14 @@ linkStatus so the frontend can show the right state:
 
 from typing import Any
 
+from lambdas.common import ingest_tokens
 from lambdas.common.dynamo_helpers import SPOTIFY_REFRESH_TOKEN_ATTR, SPOTIFY_USER_ID_ATTR
 from lambdas.common.errors import handle_errors
 from lambdas.common.link_requests import has_pending_for_email
 from lambdas.common.logger import get_logger
-from lambdas.common.shares_dynamo import scan_shares_by_normalized_handles
+from lambdas.common.shares_dynamo import owner_has_shares, scan_shares_by_normalized_handles
 from lambdas.common.user_links import LINKED_HANDLES_ATTR, get_user_record
-from lambdas.common.utility_helpers import get_caller_email, success_response
+from lambdas.common.utility_helpers import get_caller_email, is_admin, success_response
 
 log = get_logger(__file__)
 
@@ -57,6 +58,17 @@ def handler(event: dict, context: Any) -> dict:
     spotify_connected = bool(record.get(SPOTIFY_REFRESH_TOKEN_ATTR))
     spotify_user_id = record.get(SPOTIFY_USER_ID_ATTR) if spotify_connected else None
 
+    # Admin flag (WS6): true only for Dom (caller email == ADMIN_EMAIL). The
+    # frontend uses it to HIDE the "set up your own" card (Dom is the global
+    # baseline everyone already sees) and to gate the admin portal.
+    caller_is_admin = is_admin(email)
+
+    # Own-ingest flag (WS6): true if the caller runs their OWN extractor -- either
+    # they hold a live ingest token OR they already own shares. Lets the frontend
+    # hide the onboarding card for anyone who has self-served. Dom trivially owns
+    # shares, so this is also True for him (and he's admin regardless).
+    own_ingest = ingest_tokens.owner_has_active_token(email) or owner_has_shares(email)
+
     return success_response({
         "email": email,
         "linkStatus": link_status,
@@ -65,4 +77,6 @@ def handler(event: dict, context: Any) -> dict:
         "shareCount": len(matched),
         "spotifyConnected": spotify_connected,
         "spotifyUserId": spotify_user_id,
+        "isAdmin": caller_is_admin,
+        "ownIngest": own_ingest,
     })

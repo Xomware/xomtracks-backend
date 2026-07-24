@@ -248,6 +248,22 @@ def get_caller_email(event: dict) -> str:
     return get_caller_owner(event)
 
 
+def is_admin(email: str | None) -> bool:
+    """
+    True if `email` is the configured admin (Dom), case-insensitively.
+
+    The single source of truth for the admin check, reused by both require_admin
+    (gates /admin/* routes) and GET /me/get's `isAdmin` flag (lets the frontend
+    hide the "set up your own" card + show the admin portal). Empty ADMIN_EMAIL or
+    a falsy caller email is never admin.
+    """
+    from lambdas.common.constants import ADMIN_EMAIL
+
+    if not ADMIN_EMAIL or not email:
+        return False
+    return email.strip().lower() == ADMIN_EMAIL.strip().lower()
+
+
 def require_admin(event: dict) -> str:
     """
     Resolve the caller's verified email AND assert it is the configured admin
@@ -259,11 +275,10 @@ def require_admin(event: dict) -> str:
     there is no valid caller token, or ForbiddenError (403) if the caller is
     authenticated but is not the admin.
     """
-    from lambdas.common.constants import ADMIN_EMAIL
     from lambdas.common.errors import ForbiddenError
 
     email = get_caller_email(event)
-    if not ADMIN_EMAIL or email.strip().lower() != ADMIN_EMAIL.strip().lower():
+    if not is_admin(email):
         raise ForbiddenError(
             message="Admin access required",
             handler="utility_helpers",
