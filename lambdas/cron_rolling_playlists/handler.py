@@ -51,6 +51,10 @@ from lambdas.common.constants import (
     ROLLING_WINDOW_DAYS,
     USERS_TABLE_NAME,
 )
+from lambdas.common.covers import (
+    XOMIFY_COVER_IN_BASE_64,
+    XOMIFY_COVER_OUT_BASE_64,
+)
 from lambdas.common.dynamo_helpers import (
     list_spotify_connected_users,
     update_table_item_field,
@@ -87,6 +91,12 @@ _DIRECTION_ROW_ATTR = {
 _DIRECTION_BLURB = {
     "in": "shared with you",
     "out": "shared by you",
+}
+# xomify-branded cover per direction: the color band encodes direction (green =
+# shared-with-me / inbound, purple = shared-by-me / outbound). See covers.py.
+_DIRECTION_COVER = {
+    "in": XOMIFY_COVER_IN_BASE_64,
+    "out": XOMIFY_COVER_OUT_BASE_64,
 }
 
 
@@ -197,6 +207,7 @@ async def _sync_direction(
         playlist_id = await upsert_playlist(
             session, spotify, user_id,
             playlist_id=existing_id, name=name, description=description, uris=uris,
+            image=_DIRECTION_COVER[direction],
         )
     except Exception as err:
         # Recreate-on-failure, but ONLY when the existing playlist is genuinely
@@ -214,6 +225,7 @@ async def _sync_direction(
         playlist_id = await upsert_playlist(
             session, spotify, user_id,
             playlist_id=None, name=name, description=description, uris=uris,
+            image=_DIRECTION_COVER[direction],
         )
 
     if playlist_id != existing_id:

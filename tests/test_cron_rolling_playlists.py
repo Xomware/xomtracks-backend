@@ -70,8 +70,8 @@ class TestRebuild:
     def test_creates_both_and_persists_ids(self, monkeypatch):
         captured = []
 
-        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
-            captured.append({"playlist_id": playlist_id, "name": name, "uris": uris})
+        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
+            captured.append({"playlist_id": playlist_id, "name": name, "uris": uris, "image": image})
             return "in-id" if "With Me" in name else "out-id"
 
         puts = self._wire(monkeypatch, existing="unset", upsert=fake_upsert)
@@ -87,9 +87,14 @@ class TestRebuild:
         assert len(puts) == 2
         # created path passes playlist_id=None (unset placeholder normalized away)
         assert all(c["playlist_id"] == "unset" for c in captured)
+        # each direction gets its OWN xomify-branded cover (green in / purple out)
+        by_dir = {"in" if "With Me" in c["name"] else "out": c["image"] for c in captured}
+        assert by_dir["in"] == H.XOMIFY_COVER_IN_BASE_64
+        assert by_dir["out"] == H.XOMIFY_COVER_OUT_BASE_64
+        assert by_dir["in"] != by_dir["out"]
 
     def test_update_in_place_does_not_repersist(self, monkeypatch):
-        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
             return playlist_id  # unchanged id == existing
 
         puts = self._wire(monkeypatch, existing="existing-id", upsert=fake_upsert)
@@ -101,7 +106,7 @@ class TestRebuild:
         assert puts == []  # id unchanged -> no SSM write
 
     def test_recreate_only_when_playlist_gone(self, monkeypatch):
-        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
             if playlist_id and playlist_id != "unset":
                 raise RuntimeError("404 playlist gone")
             return "fresh-id"
@@ -125,7 +130,7 @@ class TestRebuild:
         NO new id persisted (the core 'never create duplicates' guarantee)."""
         create_calls = {"n": 0}
 
-        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
             if playlist_id and playlist_id != "unset":
                 raise RuntimeError("429 transient")
             create_calls["n"] += 1
@@ -145,7 +150,7 @@ class TestRebuild:
         assert puts == []  # never persisted a new id
 
     def test_handler_returns_summary(self, monkeypatch, mock_context):
-        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+        async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
             return "pid"
 
         self._wire(monkeypatch, existing="unset", upsert=fake_upsert)

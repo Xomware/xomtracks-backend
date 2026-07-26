@@ -44,7 +44,7 @@ def _wire(monkeypatch, connected):
     # connected owner rows have no rolling ids yet; service owner reads "unset"
     monkeypatch.setattr(H, "get_ssm_param", lambda name: "unset")
 
-    async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+    async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
         return f"plid-{user_id}-{'in' if 'With Me' in name else 'out'}"
 
     monkeypatch.setattr(H, "upsert_playlist", fake_upsert)
@@ -91,7 +91,7 @@ def test_scoping_off_only_service_owner(monkeypatch):
     monkeypatch.setattr(H, "get_ssm_param", lambda name: "unset")
     monkeypatch.setattr(H, "put_ssm_param", lambda name, val: None)
 
-    async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris):
+    async def fake_upsert(session, spotify, user_id, *, playlist_id, name, description, uris, image=None):
         return "plid"
 
     monkeypatch.setattr(H, "upsert_playlist", fake_upsert)
