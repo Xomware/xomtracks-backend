@@ -233,12 +233,16 @@ def handle_errors(handler_name: str, log_context: bool = True):
     def decorator(func):
         def wrapper(event, context):
             try:
-                return func(event, context)
+                response = func(event, context)
+                _record_request(event, response)
+                return response
             except XomtracksError as e:
                 e.log_error()
                 if log_context:
                     log_error_context(handler_name, func.__name__, event, context)
-                return e.to_response()
+                response = e.to_response()
+                _record_request(event, response, error=e.message)
+                return response
             except Exception as e:
                 log.error(f"Unexpected error in {handler_name}: {str(e)}")
                 log.error(traceback.format_exc())
@@ -253,8 +257,26 @@ def handle_errors(handler_name: str, log_context: bool = True):
                     function=func.__name__,
                     status=500,
                 )
-                return error.to_response()
+                response = error.to_response()
+                _record_request(event, response, error=raw_message)
+                return response
 
         return wrapper
 
     return decorator
+
+
+def _record_request(event, response, error: Optional[str] = None) -> None:
+    """
+    Central, FAIL-OPEN request-log hook (admin portal WS6). Records each authed
+    HTTP request's outcome (path/method/status/caller email + any error) for the
+    calls & errors dashboard. NO-OP for non-HTTP events (crons) and when the log
+    table is unconfigured. Lazy import breaks the errors<->request_log cycle and
+    keeps this a no-op with zero cost when logging is off.
+    """
+    try:
+        from lambdas.common.request_log import record_from_event
+
+        record_from_event(event, response, error=error)
+    except Exception:  # noqa: BLE001 -- telemetry must never break a request
+        pass

@@ -27,6 +27,26 @@ class TestDetectPlatform:
     def test_soundcloud_with_www(self):
         assert detect_platform("https://www.soundcloud.com/artist/track") == "soundcloud"
 
+    def test_soundcloud_short_on_host(self):
+        # The exact link that failed live (shares_found: 0) before this fix --
+        # a share-sheet short link with an opaque hash, no user/track slug.
+        assert detect_platform("https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU") == "soundcloud"
+
+    def test_soundcloud_mobile_host(self):
+        assert detect_platform("https://m.soundcloud.com/artist/track") == "soundcloud"
+
+    def test_soundcloud_firebase_dynamic_link(self):
+        assert detect_platform("https://soundcloud.app.goo.gl/abc123XYZ") == "soundcloud"
+
+    def test_soundcloud_snd_sc_shortener(self):
+        assert detect_platform("https://snd.sc/aBcD1234") == "soundcloud"
+
+    def test_soundcloud_lookalike_host_is_not_matched(self):
+        # Guard the subdomain regex against a phishing-style lookalike host --
+        # `notsoundcloud.com` and `soundcloud.com.evil.io` must NOT match.
+        assert detect_platform("https://notsoundcloud.com/artist/track") is None
+        assert detect_platform("https://soundcloud.com.evil.io/x") is None
+
     def test_apple_music(self):
         assert detect_platform("https://music.apple.com/us/album/x/123") == "apple"
 
@@ -52,6 +72,13 @@ class TestExtractUrlsFromText:
             "https://open.spotify.com/track/aaa",
             "https://soundcloud.com/x/bbb",
         ]
+
+    def test_keeps_soundcloud_short_link(self):
+        # Detection gates which URLs survive _clean_and_filter -- a short link
+        # must be KEPT (not dropped as unsupported) so the share gets ingested.
+        text = "listen https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+        urls = extract_urls_from_text(text)
+        assert urls == ["https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"]
 
     def test_ignores_unsupported_platform_links(self):
         text = "watch this https://youtube.com/watch?v=abc123"

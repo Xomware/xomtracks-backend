@@ -289,6 +289,24 @@ class RevokeIngestTokenRequest(BaseModel):
         return None
 
 
+class AdminRevokeTokenRequest(BaseModel):
+    """
+    POST /admin/revoke-token -- the admin (Dom) revokes ANY user's ingest token
+    by its hash (an admin override of the owner-scoped /ingest-tokens/revoke).
+    Only the non-secret `tokenHash` is accepted here (the plaintext is never
+    known to the admin); it is required.
+    """
+
+    tokenHash: str = Field(min_length=1)
+
+    @field_validator("tokenHash")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("tokenHash must not be blank")
+        return v.strip()
+
+
 class CreatePlaylistRequest(BaseModel):
     """
     POST /playlists/create -- on-the-spot playlist build from a hand-picked

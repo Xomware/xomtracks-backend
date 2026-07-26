@@ -24,6 +24,7 @@ import boto3
 from boto3.dynamodb.conditions import Attr, Key
 
 from lambdas.common.constants import (
+    DEFAULT_OWNER_ID,
     SHARES_TABLE_NAME,
     SHARES_DIRECTION_INDEX,
     SHARES_SHARER_INDEX,
@@ -311,6 +312,82 @@ def query_shares_by_owner_direction(owner_id: str, direction: str, since_epoch: 
         raise DynamoDBError(
             message=str(err), function="query_shares_by_owner_direction", table=SHARES_TABLE_NAME
         )
+
+
+def _owner_feed_partitions(caller_owner: str | None) -> list[str]:
+    """
+    The set of owner ids whose shares make up the ALWAYS-ON global feed for a
+    caller, in priority order.
+
+    Every user sees Dom's shares (DEFAULT_OWNER_ID) as the global baseline, PLUS
+    their own on top. When the caller IS Dom we return only his partition so his
+    rows are never double-counted. Comparison is case-insensitive since both ids
+    are normalized emails. Returns [DEFAULT_OWNER_ID] when caller_owner is absent.
+    """
+    baseline = (DEFAULT_OWNER_ID or "").strip().lower()
+    caller = (caller_owner or "").strip().lower()
+    owners = [DEFAULT_OWNER_ID] if DEFAULT_OWNER_ID else []
+    if caller and caller != baseline:
+        owners.append(caller_owner)
+    return owners
+
+
+def query_owner_feed(caller_owner: str, direction: str, since_epoch: int) -> list[dict]:
+    """
+    The ALWAYS-ON global feed for `caller_owner`: the union of Dom's shares
+    (DEFAULT_OWNER_ID, the global baseline everyone sees) and the caller's OWN
+    owner-scoped shares, in the given direction and time window, via GSI-3.
+
+    Fans out one GSI-3 query per relevant owner partition (`<ownerId>#<direction>`),
+    merges the results, and DEDUPES by shareId so a share can never appear twice.
+    When the caller IS Dom there is a single partition and thus a single query.
+
+    Callers still sort by messageDate desc after this returns (each partition is
+    individually SK-sorted, but the merged union is not globally ordered).
+
+    Pagination caveat: each partition is fully drained across its own Query pages
+    (see query_shares_by_owner_direction); there is no cross-partition cursor.
+    Fine at friend-group scale (two small partitions). If a hard page LIMIT is
+    ever added to the feed it must be applied AFTER the merge+sort here, not
+    per-partition, or the union would be biased toward one owner.
+    """
+    merged: dict[str, dict] = {}
+    for owner in _owner_feed_partitions(caller_owner):
+        for item in query_shares_by_owner_direction(owner, direction, since_epoch):
+            share_id = item.get("shareId")
+            if share_id is not None:
+                merged[share_id] = item
+    return list(merged.values())
+
+
+def owner_has_shares(owner_id: str) -> bool:
+    """
+    True if `owner_id` owns at least one share in EITHER direction (via GSI-3).
+
+    Backs the `ownIngest` flag on GET /me/get -- a caller who owns shares has an
+    active ingest of their own. Uses a Limit=1 Query per direction (cheap, no full
+    drain). Fails CLOSED to False on any lookup error -- a hiccup must not falsely
+    claim the caller self-serves; the caller can retry.
+    """
+    if not owner_id:
+        return False
+    try:
+        table = _get_dynamodb().Table(SHARES_TABLE_NAME)
+        for direction in ("in", "out"):
+            owner_direction = compute_owner_direction(owner_id, direction)
+            if owner_direction is None:
+                continue
+            res = table.query(
+                IndexName=SHARES_OWNER_DIRECTION_INDEX,
+                KeyConditionExpression=Key("ownerDirection").eq(owner_direction),
+                Limit=1,
+            )
+            if res.get("Items"):
+                return True
+        return False
+    except Exception as err:  # noqa: BLE001 -- non-critical flag, fail closed
+        log.error(f"owner_has_shares lookup failed (returning False): {err}")
+        return False
 
 
 def query_shares_by_sharer(sharer_handle: str, since_epoch: int) -> list[dict]:

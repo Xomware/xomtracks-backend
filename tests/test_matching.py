@@ -17,9 +17,14 @@ SC remixes/bootlegs not on Spotify -- excluded from playlists, not an error).
 All external HTTP is mocked/injected -- no real network calls in tests.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from lambdas.common.matching import (
+    _canonicalize_soundcloud_url,
+    _is_soundcloud_short_link,
+    default_soundcloud_resolver,
     extract_spotify_track_id,
     fuzzy_best_match,
     match_share,
@@ -230,6 +235,121 @@ class TestMatchShareSoundcloudBranch:
         result = await match_share(share, spotify, soundcloud_resolver=failing_resolver)
 
         assert result["matchStatus"] == "unmatched"
+
+
+class TestSoundcloudShortLinkResolution:
+    """
+    default_soundcloud_resolver must canonicalize SoundCloud short/share
+    links (on.soundcloud.com/<hash>, soundcloud.app.goo.gl/..., snd.sc/...)
+    by following their redirect BEFORE calling the resolve endpoint -- the
+    resolve API can't take the opaque hash. This is the fix for the live bug
+    where `https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU` ingested as a
+    titleless share. All HTTP is mocked -- no real network.
+    """
+
+    def _resp(self, *, status=200, url=None, json_body=None):
+        resp = MagicMock()
+        resp.status_code = status
+        if url is not None:
+            resp.url = url
+        if json_body is not None:
+            resp.json.return_value = json_body
+        return resp
+
+    def test_is_short_link_detection(self):
+        assert _is_soundcloud_short_link("https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU")
+        assert _is_soundcloud_short_link("https://soundcloud.app.goo.gl/abc")
+        assert _is_soundcloud_short_link("https://snd.sc/abc")
+        assert not _is_soundcloud_short_link("https://soundcloud.com/griz/ffrv1")
+        assert not _is_soundcloud_short_link("https://open.spotify.com/track/x")
+
+    def test_canonicalize_follows_redirect_and_strips_tracking_query(self):
+        canonical_with_params = (
+            "https://soundcloud.com/griz/ffrv1?ref=clipboard&si=ABC&utm_source=clipboard"
+        )
+        with patch("lambdas.common.matching.requests") as req:
+            req.head.return_value = self._resp(status=200, url=canonical_with_params)
+            resolved = _canonicalize_soundcloud_url(
+                "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+            )
+        assert resolved == "https://soundcloud.com/griz/ffrv1"
+        req.head.assert_called_once()
+
+    def test_canonicalize_leaves_canonical_url_untouched(self):
+        with patch("lambdas.common.matching.requests") as req:
+            resolved = _canonicalize_soundcloud_url("https://soundcloud.com/griz/ffrv1")
+        assert resolved == "https://soundcloud.com/griz/ffrv1"
+        req.head.assert_not_called()  # no network for an already-canonical URL
+
+    def test_canonicalize_falls_back_to_get_when_head_rejected(self):
+        canonical = "https://soundcloud.com/griz/ffrv1"
+        short = "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+        with patch("lambdas.common.matching.requests") as req:
+            # HEAD returns 405 still on the short host -> GET fallback wins.
+            req.head.return_value = self._resp(status=405, url=short)
+            req.get.return_value = self._resp(status=200, url=canonical)
+            resolved = _canonicalize_soundcloud_url(short)
+        assert resolved == canonical
+        req.get.assert_called_once()
+
+    def test_canonicalize_degrades_to_original_on_redirect_error(self):
+        short = "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+        with patch("lambdas.common.matching.requests") as req:
+            req.head.side_effect = RuntimeError("network down")
+            resolved = _canonicalize_soundcloud_url(short)
+        assert resolved == short  # never raises; resolve step will just fail
+
+    @pytest.mark.asyncio
+    async def test_resolver_yields_real_title_for_short_link(self, monkeypatch):
+        # End-to-end resolver: short link -> redirect -> resolve API -> title.
+        from lambdas.common import ssm_helpers
+
+        monkeypatch.setattr(ssm_helpers, "SOUNDCLOUD_CLIENT_ID", "fake_client_id")
+
+        short = "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU"
+        canonical = "https://soundcloud.com/griz/ffrv1"
+
+        with patch("lambdas.common.matching.requests") as req:
+            req.head.return_value = self._resp(status=200, url=canonical)
+            req.get.return_value = self._resp(
+                status=200,
+                json_body={"title": "ffrv1", "user": {"username": "GRiZ"}},
+            )
+            resolved = await default_soundcloud_resolver(short)
+
+        assert resolved == ("ffrv1", "GRiZ")
+        # resolve endpoint was called with the CANONICAL url, not the hash.
+        _, kwargs = req.get.call_args
+        assert kwargs["params"]["url"] == canonical
+
+    @pytest.mark.asyncio
+    async def test_short_link_share_matches_via_match_share(self, monkeypatch):
+        # Full matcher path with the REAL resolver: a short-link soundcloud
+        # share ends up MATCHED with a real title, not "Untitled".
+        from lambdas.common import ssm_helpers
+
+        monkeypatch.setattr(ssm_helpers, "SOUNDCLOUD_CLIENT_ID", "fake_client_id")
+
+        share = {
+            "platform": "soundcloud",
+            "sourceUrl": "https://on.soundcloud.com/LA3v2rA4vjcaIcTjyU",
+        }
+        spotify = FakeSpotify(search_results=[_spotify_track("t1", "ffrv1", "GRiZ")])
+
+        with patch("lambdas.common.matching.requests") as req:
+            req.head.return_value = self._resp(
+                status=200, url="https://soundcloud.com/griz/ffrv1?si=x"
+            )
+            req.get.return_value = self._resp(
+                status=200,
+                json_body={"title": "ffrv1", "user": {"username": "GRiZ"}},
+            )
+            result = await match_share(share, spotify)
+
+        assert result["matchStatus"] == "matched"
+        assert result["resolvedSpotifyId"] == "t1"
+        assert result["trackTitle"] == "ffrv1"
+        assert result["trackArtist"] == "GRiZ"
 
 
 class TestMatchShareAppleBranch:
