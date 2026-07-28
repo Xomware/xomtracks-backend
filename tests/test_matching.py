@@ -438,3 +438,72 @@ class TestApplyManualOverride:
 
         with pytest.raises(ValidationError):
             await apply_manual_override(spotify, "nonexistent")
+
+
+class TestSoundcloudClientIdSelfHeal:
+    """
+    default_soundcloud_resolver auto-heals an EXPIRED scraped client_id: a
+    401/403 from the resolve endpoint triggers ONE refresh
+    (soundcloud.refresh_client_id) + retry with the fresh id. If the refresh
+    fails, the share fails closed to unmatched -- the sweep never crashes.
+    All HTTP + the refresh are mocked; no real network.
+    """
+
+    def _resp(self, *, status=200, json_body=None):
+        resp = MagicMock()
+        resp.status_code = status
+        if json_body is not None:
+            resp.json.return_value = json_body
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_403_refreshes_client_id_and_retries(self, monkeypatch):
+        from lambdas.common import soundcloud, ssm_helpers
+
+        monkeypatch.setattr(ssm_helpers, "SOUNDCLOUD_CLIENT_ID", "stale_id")
+        monkeypatch.setattr(soundcloud, "refresh_client_id", lambda: "fresh_id")
+
+        canonical = "https://soundcloud.com/griz/ffrv1"
+        with patch("lambdas.common.matching.requests") as req:
+            req.get.side_effect = [
+                self._resp(status=403),
+                self._resp(status=200, json_body={"title": "ffrv1", "user": {"username": "GRiZ"}}),
+            ]
+            resolved = await default_soundcloud_resolver(canonical)
+
+        assert resolved == ("ffrv1", "GRiZ")
+        # Exactly two resolve attempts; the RETRY used the refreshed id.
+        assert req.get.call_count == 2
+        _, retry_kwargs = req.get.call_args_list[1]
+        assert retry_kwargs["params"]["client_id"] == "fresh_id"
+
+    @pytest.mark.asyncio
+    async def test_401_refresh_failure_fails_closed_to_none(self, monkeypatch):
+        from lambdas.common import soundcloud, ssm_helpers
+
+        monkeypatch.setattr(ssm_helpers, "SOUNDCLOUD_CLIENT_ID", "stale_id")
+        monkeypatch.setattr(soundcloud, "refresh_client_id", lambda: None)
+
+        with patch("lambdas.common.matching.requests") as req:
+            req.get.side_effect = [self._resp(status=401)]
+            resolved = await default_soundcloud_resolver("https://soundcloud.com/griz/ffrv1")
+
+        assert resolved is None
+        # No retry when the refresh yields nothing.
+        assert req.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_expired_id_share_stays_unmatched_when_refresh_fails(self, monkeypatch):
+        from lambdas.common import soundcloud, ssm_helpers
+
+        monkeypatch.setattr(ssm_helpers, "SOUNDCLOUD_CLIENT_ID", "stale_id")
+        monkeypatch.setattr(soundcloud, "refresh_client_id", lambda: None)
+
+        share = {"platform": "soundcloud", "sourceUrl": "https://soundcloud.com/griz/ffrv1"}
+        spotify = FakeSpotify(search_results=[])
+        with patch("lambdas.common.matching.requests") as req:
+            req.get.side_effect = [self._resp(status=403)]
+            result = await match_share(share, spotify)
+
+        assert result["matchStatus"] == "unmatched"
+        assert result["resolvedSpotifyId"] is None
