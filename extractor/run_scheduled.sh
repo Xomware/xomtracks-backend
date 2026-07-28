@@ -28,7 +28,11 @@
 #
 set -euo pipefail
 
-REPO_DIR="/Users/dom/Code/xomtracks-backend"
+# REPO_DIR is where the extractor package + its .venv live. It defaults to
+# Dom's checkout (his legacy launchd job is unaffected), but a self-serve user's
+# install lives at ~/.xomtracks/app, so the guided installer (extractor/install.sh)
+# sets XOMTRACKS_REPO_DIR in the LaunchAgent's EnvironmentVariables to point here.
+REPO_DIR="${XOMTRACKS_REPO_DIR:-/Users/dom/Code/xomtracks-backend}"
 VENV_DIR="${REPO_DIR}/.venv"
 LOG_FILE="${HOME}/Library/Logs/xomtracks-extractor.log"
 INGEST_URL="https://api.xomtracks.xomware.com/shares/ingest"
