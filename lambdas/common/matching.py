@@ -240,8 +240,15 @@ async def default_soundcloud_resolver(url: str) -> tuple[str, str] | None:
     Acceptable at this app's scale (personal-use matching sweeps, not a
     high-concurrency service); revisit with a thread executor if that
     changes.
+
+    SELF-HEAL: SoundCloud's scraped client_id expires periodically, at which
+    point the resolve endpoint answers 401/403 and EVERY SoundCloud share
+    silently degrades to titleless `unmatched`. On a 401/403 we scrape +
+    validate + persist a fresh id (soundcloud.refresh_client_id) ONCE and
+    retry. If the refresh fails, we fail closed to None -> unmatched rather
+    than crash the sweep.
     """
-    from lambdas.common import ssm_helpers
+    from lambdas.common import soundcloud, ssm_helpers
 
     resolve_url = _canonicalize_soundcloud_url(url)
 
@@ -251,6 +258,20 @@ async def default_soundcloud_resolver(url: str) -> tuple[str, str] | None:
         params={"url": resolve_url, "client_id": client_id},
         timeout=10,
     )
+    if resp.status_code in (401, 403):
+        log.warning(
+            f"SoundCloud resolve auth failed ({resp.status_code}) for {resolve_url}; "
+            "refreshing client_id and retrying once"
+        )
+        fresh_id = soundcloud.refresh_client_id()
+        if not fresh_id:
+            log.error("SoundCloud client_id refresh failed; leaving share unmatched")
+            return None
+        resp = requests.get(
+            "https://api-v2.soundcloud.com/resolve",
+            params={"url": resolve_url, "client_id": fresh_id},
+            timeout=10,
+        )
     if resp.status_code != 200:
         log.warning(f"SoundCloud resolve failed ({resp.status_code}) for {resolve_url}")
         return None

@@ -4,8 +4,8 @@ XOMTRACKS Rolling Playlists Cron
 Rebuilds TWO public playlists PER OWNER from the trailing 30 days of that
 owner's MATCHED shares, updated IN PLACE each run. Never creates duplicates.
 
-- "Xomtracks — Shared With Me (Last Month)"  <- direction=in
-- "Xomtracks — Shared By Me (Last Month)"     <- direction=out
+- "Shared With Me (Last Month)"  <- direction=in
+- "Shared By Me (Last Month)"     <- direction=out
 
 Self-serve foundation Phase 2 -- per-user Spotify OAuth + owner scoping:
   * OWNER ENUMERATION: every user who connected their Spotify (a xomtracks-users
@@ -48,6 +48,7 @@ from lambdas.common.constants import (
     ROLLING_IN_PLAYLIST_PARAM,
     ROLLING_OUT_PLAYLIST_PARAM,
     ROLLING_PLAYLIST_NAMES,
+    ROLLING_PLAYLIST_ROW_ATTRS,
     ROLLING_WINDOW_DAYS,
     USERS_TABLE_NAME,
 )
@@ -84,10 +85,8 @@ _DIRECTION_PARAM = {
 }
 # Per-owner rolling-playlist ids live on the owner's xomtracks-users row (the
 # service account keeps using the two SSM params instead -- see _playlist_id_*).
-_DIRECTION_ROW_ATTR = {
-    "in": "rollingInPlaylistId",
-    "out": "rollingOutPlaylistId",
-}
+# Attribute names are shared with GET /me/playlists via constants.
+_DIRECTION_ROW_ATTR = ROLLING_PLAYLIST_ROW_ATTRS
 _DIRECTION_BLURB = {
     "in": "shared with you",
     "out": "shared by you",
