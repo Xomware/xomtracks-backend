@@ -82,3 +82,86 @@ class TestScrapeClientId:
 
 def test_ssm_param_path_is_xomtracks_scoped():
     assert SOUNDCLOUD_CLIENT_ID_PARAM == "/xomtracks/soundcloud/CLIENT_ID"
+
+
+_GOOD = "GOODcandidate0123456789abcdefABC"  # 32 base62 chars
+_BAD = "BADcandidate00000000000000000000"   # 32 base62 chars
+
+
+class TestRefreshClientIdValidation:
+    """
+    refresh_client_id scrapes candidates, keeps the FIRST that validates
+    against the resolve endpoint, and persists it. When nothing validates (or
+    nothing scrapes) it writes NOTHING -- the stale id is never clobbered.
+    Both the fetch and validate edges are injected; SSM writes are captured.
+    """
+
+    def _homepage(self):
+        return '<script src="https://a-v2.sndcdn.com/assets/app.js"></script>'
+
+    def test_picks_first_validating_candidate_and_writes_ssm(self, monkeypatch):
+        from lambdas.common import soundcloud
+
+        pages = {
+            "https://soundcloud.com/": self._homepage(),
+            # Bundle inlines a bad candidate first, then the live one.
+            "https://a-v2.sndcdn.com/assets/app.js": f'client_id:"{_BAD}",x client_id:"{_GOOD}"',
+        }
+        from lambdas.common import ssm_helpers
+
+        writes = []
+        monkeypatch.setattr(
+            ssm_helpers, "put_ssm_param", lambda name, value, secure=True: writes.append((name, value))
+        )
+
+        result = soundcloud.refresh_client_id(
+            fetch=lambda url: pages[url],
+            validate=lambda cid: cid == _GOOD,
+        )
+
+        assert result == _GOOD
+        assert writes == [(soundcloud.SOUNDCLOUD_CLIENT_ID_PARAM, _GOOD)]
+
+    def test_no_candidate_validates_writes_nothing(self, monkeypatch):
+        from lambdas.common import soundcloud, ssm_helpers
+
+        pages = {
+            "https://soundcloud.com/": self._homepage(),
+            "https://a-v2.sndcdn.com/assets/app.js": f'client_id:"{_BAD}"',
+        }
+        writes = []
+        monkeypatch.setattr(ssm_helpers, "put_ssm_param", lambda *a, **k: writes.append(a))
+
+        result = soundcloud.refresh_client_id(fetch=lambda url: pages[url], validate=lambda cid: False)
+
+        assert result is None
+        assert writes == []
+
+    def test_empty_scrape_writes_nothing(self, monkeypatch):
+        from lambdas.common import soundcloud, ssm_helpers
+
+        writes = []
+        monkeypatch.setattr(ssm_helpers, "put_ssm_param", lambda *a, **k: writes.append(a))
+
+        result = soundcloud.refresh_client_id(fetch=lambda url: "", validate=lambda cid: True)
+
+        assert result is None
+        assert writes == []
+
+
+class TestScrapeCandidates:
+    def test_collects_all_candidates_last_bundle_first(self):
+        from lambdas.common.soundcloud import scrape_client_id_candidates
+
+        homepage = (
+            '<script src="https://a-v2.sndcdn.com/assets/app.js"></script>'
+            '<script src="https://a-v2.sndcdn.com/assets/vendor.js"></script>'
+        )
+        a, b = "aaaa0123456789abcdef0123456789AB", "bbbb0123456789abcdef0123456789CD"
+        pages = {
+            "https://soundcloud.com/": homepage,
+            "https://a-v2.sndcdn.com/assets/app.js": f'client_id:"{a}"',
+            "https://a-v2.sndcdn.com/assets/vendor.js": f'client_id:"{b}"',
+        }
+        # vendor.js (LAST) scanned first -> b before a.
+        assert scrape_client_id_candidates(fetch=lambda url: pages[url]) == [b, a]

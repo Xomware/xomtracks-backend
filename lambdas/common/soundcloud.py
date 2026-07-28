@@ -33,6 +33,13 @@ log = get_logger(__file__)
 SOUNDCLOUD_HOMEPAGE = "https://soundcloud.com/"
 SOUNDCLOUD_CLIENT_ID_PARAM = f"/{PRODUCT}/soundcloud/CLIENT_ID"
 
+# A known-good public SoundCloud track. A candidate client_id is only accepted
+# after it resolves this URL with HTTP 200 -- proof the scraped 32-char token is
+# actually a live api-v2 credential and not some unrelated 32-char string that
+# happened to sit next to `client_id` in a bundle.
+SOUNDCLOUD_RESOLVE_URL = "https://api-v2.soundcloud.com/resolve"
+SOUNDCLOUD_VALIDATION_TRACK = "https://soundcloud.com/griz/ffrv1"
+
 # <script ... src="https://a-v2.sndcdn.com/assets/....js"> tags on the
 # web-player HTML. crossorigin/defer ordering varies, so match src= loosely.
 _SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"', re.IGNORECASE)
@@ -53,6 +60,21 @@ def find_client_id(js: str) -> str | None:
     """The first 32-char SoundCloud client_id in a JS blob, or None."""
     match = _CLIENT_ID.search(js or "")
     return match.group(1) if match else None
+
+
+def find_client_ids(js: str) -> list[str]:
+    """
+    Every distinct 32-char client_id candidate in a JS blob, in first-seen
+    order. A single bundle can inline more than one -- only the live one
+    resolves, which is why refresh_client_id validates each candidate.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for candidate in _CLIENT_ID.findall(js or ""):
+        if candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+    return out
 
 
 def _default_fetch(url: str) -> str:
@@ -93,22 +115,78 @@ def scrape_client_id(fetch=_default_fetch) -> str | None:
     return None
 
 
-def refresh_client_id(fetch=_default_fetch) -> str | None:
+def scrape_client_id_candidates(fetch=_default_fetch) -> list[str]:
     """
-    Scrape a fresh SoundCloud client_id and persist it to SSM at
-    /xomtracks/soundcloud/CLIENT_ID. Returns the new id, or None (and writes
-    NOTHING) when the scrape fails -- the stale id is left in place rather
-    than clobbered with garbage.
+    Every client_id candidate scraped from the public web player, ordered so
+    the most likely valid ones come first: bundles are walked LAST-first (the
+    id lives in a trailing app bundle) and candidates within a bundle keep
+    document order. Deduped across bundles. Empty when the layout changed and
+    nothing matched.
+
+    `fetch(url) -> str` is injected so the scrape path is unit-testable with
+    zero network.
+    """
+    homepage = fetch(SOUNDCLOUD_HOMEPAGE)
+    if not homepage:
+        log.error("SoundCloud homepage returned no HTML -- cannot scrape client_id")
+        return []
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for url in reversed(extract_script_urls(homepage)):
+        for candidate in find_client_ids(fetch(url)):
+            if candidate not in seen:
+                seen.add(candidate)
+                candidates.append(candidate)
+    return candidates
+
+
+def _default_validate(client_id: str) -> bool:
+    """
+    True if `client_id` is a live api-v2 credential -- i.e. it resolves a
+    known-good public track with HTTP 200. Network errors count as invalid
+    (never accept a candidate we couldn't prove works).
+    """
+    try:
+        resp = requests.get(
+            SOUNDCLOUD_RESOLVE_URL,
+            params={"url": SOUNDCLOUD_VALIDATION_TRACK, "client_id": client_id},
+            timeout=_REQUEST_TIMEOUT,
+        )
+    except Exception as err:  # noqa: BLE001 -- a probe failure just means "unproven"
+        log.warning(f"SoundCloud client_id validation request failed: {err}")
+        return False
+    return resp.status_code == 200
+
+
+def refresh_client_id(fetch=_default_fetch, validate=_default_validate) -> str | None:
+    """
+    Scrape fresh SoundCloud client_id candidates, keep the FIRST one that
+    validates against the public resolve endpoint, and persist it to SSM at
+    /xomtracks/soundcloud/CLIENT_ID (also refreshing the in-process cache).
+
+    Returns the new id, or None (and writes NOTHING) when nothing could be
+    scraped or no candidate validated -- the stale id is left in place rather
+    than clobbered with a value that doesn't work. This is the self-heal the
+    matcher calls when a resolve returns 401/403.
     """
     from lambdas.common import ssm_helpers
 
-    client_id = scrape_client_id(fetch)
-    if not client_id:
+    candidates = scrape_client_id_candidates(fetch)
+    if not candidates:
+        log.error("SoundCloud client_id scrape found no candidates -- SSM left unchanged")
         return None
 
-    ssm_helpers.put_ssm_param(SOUNDCLOUD_CLIENT_ID_PARAM, client_id, secure=True)
-    log.info(f"Updated SSM {SOUNDCLOUD_CLIENT_ID_PARAM} with refreshed SoundCloud client_id")
-    return client_id
+    for candidate in candidates:
+        if validate(candidate):
+            ssm_helpers.put_ssm_param(SOUNDCLOUD_CLIENT_ID_PARAM, candidate, secure=True)
+            log.info(f"Updated SSM {SOUNDCLOUD_CLIENT_ID_PARAM} with a validated SoundCloud client_id")
+            return candidate
+
+    log.error(
+        f"None of {len(candidates)} scraped SoundCloud client_id candidate(s) validated -- SSM left unchanged"
+    )
+    return None
 
 
 if __name__ == "__main__":
