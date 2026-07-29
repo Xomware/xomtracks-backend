@@ -78,6 +78,10 @@ def _compact(share: dict) -> dict:
         "artist": share.get("trackArtist"),
         "albumArtUrl": share.get("albumArtUrl"),
         "platform": share.get("platform"),
+        # The original shared link (open.spotify.com / on.soundcloud.com / etc.)
+        # + spotify id so the hub can make each track title an "open in app" link.
+        "sourceUrl": share.get("sourceUrl"),
+        "spotifyId": share.get("spotifyTrackId") or share.get("spotifyId"),
         # Outbound shares (Dom is the sender) carry no sharerHandle/Name -> None;
         # the hub renders that as "You".
         "sharer": share.get("sharerName") or share.get("sharerHandle"),
