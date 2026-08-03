@@ -226,20 +226,33 @@ def require_fields(data: dict, *fields: str) -> None:
 # *different* mechanism entirely (a scoped SSM bearer key / per-user ingest
 # token, see resolve_ingest_owner below) -- it never carries a caller JWT.
 
-def get_caller_owner(event: dict) -> str:
+# Query-param name for the ADMIN-ONLY impersonation override. A QUERY PARAM (not
+# a custom header) is deliberate: the CORS allow-origin is `*` but the
+# allow-headers list is FIXED, so a custom request header would trip the preflight
+# check -- a query param never does. See get_caller_owner for the semantics.
+IMPERSONATE_QUERY_PARAM = "impersonate"
+
+
+def get_real_caller_email(event: dict) -> str:
     """
-    Resolve the caller's ownerId -- the NORMALIZED (lowercased) email from the
-    verified xomify token. This is the single identity every authed handler
-    keys on (owner stamping/scoping, ratings/heard raterEmail, admin check).
+    Resolve the TRUE authenticated caller's ownerId -- the NORMALIZED (lowercased)
+    email from the verified xomify token, IGNORING any impersonation override.
+
+    This is the identity the ADMIN GATE authorizes on (see require_admin): an
+    admin impersonating a non-admin must NEVER lose admin rights mid-session, and
+    the /admin/* routes must always gate on the real caller -- so they resolve
+    identity HERE, not via get_caller_owner.
 
     Raises AuthorizationError (HTTP 401) on any token failure (missing,
     malformed, bad signature, expired, or missing email/userId claim).
 
     Side effects (both FAIL-OPEN -- a failure here never breaks the request):
-      1. Auto-upserts the caller into the user directory (firstSeen/lastSeen,
-         throttled) -- the WS6 admin-portal directory hook.
-      2. Stashes the resolved email on the event so the request-log hook
-         (errors.handle_errors) can record the caller without re-verifying.
+      1. Auto-upserts the REAL caller into the user directory (firstSeen/lastSeen,
+         throttled) -- the WS6 admin-portal directory hook. Impersonation never
+         stamps the impersonated user as "seen".
+      2. Stashes the REAL caller email on the event so the request-log hook
+         (errors.handle_errors) records the actual actor without re-verifying,
+         even when impersonation is active.
     """
     from lambdas.common.xomify_auth import verify_xomify_token
 
@@ -253,7 +266,7 @@ def get_caller_owner(event: dict) -> str:
     except Exception:  # noqa: BLE001 -- fail-open: never break the caller's request
         pass
 
-    # Stash for the request-log hook (avoids a second token verify downstream).
+    # Stash the REAL caller for the request-log hook (avoids a second verify).
     if isinstance(event, dict):
         from lambdas.common.request_log import CALLER_EMAIL_EVENT_KEY
 
@@ -262,11 +275,69 @@ def get_caller_owner(event: dict) -> str:
     return email
 
 
+def _resolve_impersonation(event: dict, real_email: str) -> Optional[str]:
+    """
+    Return the effective (impersonated) owner email when the REAL caller is the
+    admin AND a non-empty `?impersonate=<email>` query param is present; else
+    None.
+
+    For NON-admins the param is IGNORED entirely -- there is no privilege-
+    escalation path. The value is normalized (trimmed + lowercased) and must look
+    like an email (contain "@"); anything else is treated as absent.
+    """
+    if not isinstance(event, dict) or not is_admin(real_email):
+        return None
+    raw = (get_query_params(event).get(IMPERSONATE_QUERY_PARAM) or "").strip().lower()
+    if not raw or "@" not in raw:
+        return None
+    return raw
+
+
+def get_caller_owner(event: dict) -> str:
+    """
+    Resolve the caller's EFFECTIVE ownerId -- the single identity every authed
+    DATA handler keys on (owner stamping/scoping, ratings/heard raterEmail, the
+    GET /me/get `isAdmin` flag).
+
+    Normally this is the REAL caller's normalized email. As an ADMIN-ONLY
+    override, when the real caller is the admin AND `?impersonate=<email>` is
+    present, the effective owner becomes that (normalized) impersonated email --
+    letting the admin step through the Shares feature AS any user. Non-admins can
+    never impersonate (the param is ignored -- no escalation).
+
+    The admin GATE never flows through here -- it uses get_real_caller_email --
+    so impersonating a non-admin does NOT drop admin rights, and /admin/* routes
+    still authorize on the real caller.
+
+    Raises AuthorizationError (HTTP 401) on any token failure.
+    """
+    real_email = get_real_caller_email(event)
+
+    impersonated = _resolve_impersonation(event, real_email)
+    if impersonated:
+        # Audit: stash the impersonation target on the event so the request-log
+        # hook can trace it (real admin email + impersonated email), and emit a
+        # log line. The token/secret are never logged.
+        if isinstance(event, dict):
+            from lambdas.common.request_log import IMPERSONATED_EMAIL_EVENT_KEY
+
+            event[IMPERSONATED_EMAIL_EVENT_KEY] = impersonated
+        log.info(
+            "admin impersonation active: real=%s impersonating=%s",
+            real_email,
+            impersonated,
+        )
+        return impersonated
+
+    return real_email
+
+
 # Back-compat alias: handlers historically read `get_caller_email` for the
 # raterEmail / admin identity. Under WS-AUTH the caller email IS the ownerId
-# (normalized), so this returns the same value as get_caller_owner.
+# (normalized), so this returns the same value as get_caller_owner -- including
+# honoring the admin-only impersonation override.
 def get_caller_email(event: dict) -> str:
-    """Alias of get_caller_owner -- the caller's normalized email (== ownerId)."""
+    """Alias of get_caller_owner -- the caller's normalized (effective) email."""
     return get_caller_owner(event)
 
 
@@ -296,10 +367,14 @@ def require_admin(event: dict) -> str:
     Returns the admin email on success. Raises AuthorizationError (401) if
     there is no valid caller token, or ForbiddenError (403) if the caller is
     authenticated but is not the admin.
+
+    Gates on the REAL caller (get_real_caller_email), NOT the effective/
+    impersonated owner -- so an admin who is impersonating a non-admin keeps
+    admin rights, and /admin/* routes always authorize on the true identity.
     """
     from lambdas.common.errors import ForbiddenError
 
-    email = get_caller_email(event)
+    email = get_real_caller_email(event)
     if not is_admin(email):
         raise ForbiddenError(
             message="Admin access required",
