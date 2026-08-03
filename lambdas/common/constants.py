@@ -204,7 +204,7 @@ ROLLING_OUT_PLAYLIST_PARAM = os.environ.get(
 PLAYLIST_ID_UNSET = 'unset'
 
 # Trailing window (days) for both rolling playlists.
-ROLLING_WINDOW_DAYS = int(os.environ.get('ROLLING_WINDOW_DAYS', '30'))
+ROLLING_WINDOW_DAYS = int(os.environ.get('ROLLING_WINDOW_DAYS', '90'))
 
 # Playlist names, keyed by share direction ('in' = shared with Dom,
 # 'out' = shared by Dom). Public on Dom's profile. The "Xomtracks — " prefix
@@ -212,8 +212,8 @@ ROLLING_WINDOW_DAYS = int(os.environ.get('ROLLING_WINDOW_DAYS', '30'))
 # branding, so the name stays clean. The next rolling-cron run renames the
 # existing playlists IN PLACE (same playlist ids, just a new name).
 ROLLING_PLAYLIST_NAMES = {
-    'in': 'Shared With Me (Last Month)',
-    'out': 'Shared By Me (Last Month)',
+    'in': 'Shared With Me (Last 3 Months)',
+    'out': 'Shared By Me (Last 3 Months)',
 }
 
 # Per-owner rolling-playlist ids are persisted on the owner's xomtracks-users
