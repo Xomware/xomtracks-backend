@@ -42,6 +42,11 @@ log = get_logger(__file__)
 # get_caller_owner, so record_from_event reads it without re-verifying the token.
 CALLER_EMAIL_EVENT_KEY = "_xt_caller_email"
 
+# Private key used to stash the IMPERSONATED target email on the event when the
+# admin-only impersonation override is active (see utility_helpers.get_caller_
+# owner). Recorded alongside the real caller so impersonation is auditable.
+IMPERSONATED_EMAIL_EVENT_KEY = "_xt_impersonated_email"
+
 _dynamodb = None
 
 
@@ -77,10 +82,21 @@ def _extract_path(event: dict) -> str | None:
     )
 
 
-def record(path: str, method: str, status: int, email: str | None = None, error: str | None = None) -> None:
+def record(
+    path: str,
+    method: str,
+    status: int,
+    email: str | None = None,
+    error: str | None = None,
+    impersonating: str | None = None,
+) -> None:
     """
     Persist one request-log item. FAIL-OPEN + NO-OP when unconfigured. Masks the
     item so no secret/token value is ever written.
+
+    When the admin-only impersonation override is active, `email` is the REAL
+    admin caller and `impersonating` is the impersonated target -- both are
+    recorded so the action is auditable.
     """
     if not _table_name():
         return
@@ -101,6 +117,8 @@ def record(path: str, method: str, status: int, email: str | None = None, error:
             item["email"] = email
         if error:
             item["error"] = error
+        if impersonating:
+            item["impersonating"] = impersonating
         # Defense-in-depth: strip anything that looks sensitive before write.
         item = mask_sensitive_data(item)
         _table().put_item(Item=item)
@@ -126,7 +144,15 @@ def record_from_event(event: dict, response: dict, error: str | None = None) -> 
     except (TypeError, ValueError):
         status = 0
     email = event.get(CALLER_EMAIL_EVENT_KEY)
-    record(path=path, method=method, status=status, email=email, error=error)
+    impersonating = event.get(IMPERSONATED_EMAIL_EVENT_KEY)
+    record(
+        path=path,
+        method=method,
+        status=status,
+        email=email,
+        error=error,
+        impersonating=impersonating,
+    )
 
 
 # ============================================
