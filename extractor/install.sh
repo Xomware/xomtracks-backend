@@ -9,12 +9,13 @@
 #
 # WHAT IT DOES (and what it deliberately does NOT do):
 #   - Sets up a *read-only* iMessage music-link extractor on YOUR Mac.
-#   - It reads ~/Library/Messages/chat.db strictly read-only (SQLite mode=ro).
-#     It NEVER writes to chat.db and NEVER sends an iMessage. The only thing
-#     that ever leaves your machine is the music links themselves (Spotify /
-#     SoundCloud / Apple Music URLs) — never message text, never contacts,
-#     never anything else. The URL allowlist in extractor/url_extractor.py is
-#     the literal, auditable guarantee.
+#   - It reads ~/Library/Messages/chat.db strictly read-only (SQLite mode=ro),
+#     and reads your macOS Contacts locally to put a name to whoever shared a
+#     link. It NEVER writes to chat.db and NEVER sends an iMessage. The only
+#     things that leave your machine are the music links themselves (Spotify /
+#     SoundCloud / Apple Music URLs) plus the sharer's resolved name — never
+#     message text, and never your address book as a whole. The URL allowlist in
+#     extractor/url_extractor.py is the literal, auditable guarantee.
 #
 # It is idempotent: re-running it repairs/updates an existing install rather
 # than duplicating it. It fails loudly at every step — it will never leave a
@@ -420,6 +421,7 @@ ${BOLD}Uninstall (full walkthrough in extractor/SELF-SERVE.md):${RST}
     rm -rf "$STATE_DIR"
     security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$KEYCHAIN_ACCOUNT"
 
-${DIM}Reminder: this tool is read-only on your Messages. Only music links leave
-your Mac — never message text, never contacts.${RST}
+${DIM}Reminder: this tool is read-only on your Messages. What leaves your Mac is
+music links + the sharer's name (resolved locally from Contacts) — never message
+text, and never your address book.${RST}
 DONE
