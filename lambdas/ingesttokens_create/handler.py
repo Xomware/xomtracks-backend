@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import ValidationError as PydanticValidationError
 
-from lambdas.common import ingest_tokens
+from lambdas.common import dynamo_helpers, ingest_tokens
 from lambdas.common.errors import ValidationError, handle_errors
 from lambdas.common.logger import get_logger
 from lambdas.common.models import CreateIngestTokenRequest
@@ -48,6 +48,16 @@ def handler(event: dict, context: Any) -> dict:
 
     # The plaintext token is returned ONCE here and never logged.
     log.info(f"Minted ingest token for owner={owner_id} tokenHash={minted['tokenHash']}")
+
+    # Opting in is the moment a user becomes a real self-serve owner (their
+    # extractor will start stamping shares as them). Enroll them for their OWN
+    # rolling playlists by syncing the Spotify token they already granted at
+    # xomify sign-in onto their xomtracks-users row -- the rolling cron scans
+    # that table. Best-effort and idempotent: no re-auth, never fails the mint,
+    # no-ops if they're already connected. (Gated here, not on /me/get, so we
+    # don't enroll every Shares visitor and spawn empty playlists on their
+    # accounts.)
+    dynamo_helpers.ensure_spotify_connection_from_xomify(owner_id)
 
     return success_response(
         {
