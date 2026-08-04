@@ -23,7 +23,7 @@ from lambdas.common.link_requests import has_pending_for_email
 from lambdas.common.logger import get_logger
 from lambdas.common.shares_dynamo import owner_has_shares, scan_shares_by_normalized_handles
 from lambdas.common.user_links import LINKED_HANDLES_ATTR, get_user_record
-from lambdas.common.utility_helpers import get_caller_email, is_admin, success_response
+from lambdas.common.utility_helpers import epoch_to_iso, get_caller_email, is_admin, success_response
 
 log = get_logger(__file__)
 
@@ -67,7 +67,16 @@ def handler(event: dict, context: Any) -> dict:
     # they hold a live ingest token OR they already own shares. Lets the frontend
     # hide the onboarding card for anyone who has self-served. Dom trivially owns
     # shares, so this is also True for him (and he's admin regardless).
-    own_ingest = ingest_tokens.owner_has_active_token(email) or owner_has_shares(email)
+    #
+    # One scan of the caller's active tokens backs BOTH ownIngest and lastScanAt
+    # (the onboarding "Connected" panel's "last scan" readout) -- max lastUsedAt
+    # across those tokens, null until the first extractor push lands.
+    active_tokens = ingest_tokens.list_active_tokens_for_owner(email)
+    own_ingest = bool(active_tokens) or owner_has_shares(email)
+    last_scan_epoch = max(
+        (t["lastUsedAt"] for t in active_tokens if t.get("lastUsedAt")),
+        default=None,
+    )
 
     return success_response({
         "email": email,
@@ -79,4 +88,5 @@ def handler(event: dict, context: Any) -> dict:
         "spotifyUserId": spotify_user_id,
         "isAdmin": caller_is_admin,
         "ownIngest": own_ingest,
+        "lastScanAt": epoch_to_iso(last_scan_epoch),
     })
