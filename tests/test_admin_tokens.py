@@ -74,3 +74,19 @@ class TestList:
         assert a["token"] not in resp["body"]
         row = data["byOwner"]["a@example.com"][0]
         assert set(row) == {"ownerEmail", "tokenHash", "label", "createdAt", "lastUsedAt", "revoked"}
+
+    def test_flags_which_owners_are_spotify_connected(self, tables, authorized_event, mock_context):
+        import boto3
+
+        from lambdas.admin_tokens.handler import handler
+        from lambdas.common import ingest_tokens
+
+        ingest_tokens.mint_token("connected@example.com", label="mbp")
+        ingest_tokens.mint_token("nostagram@example.com", label="mini")
+        # Only the first owner has a Spotify connection (refreshToken) in xomtracks.
+        boto3.resource("dynamodb", region_name="us-east-1").Table(USERS_TABLE_NAME).put_item(
+            Item={"email": "connected@example.com", "refreshToken": "rt-1", "ownerId": "connected@example.com"}
+        )
+
+        data = json.loads(handler(authorized_event(email=ADMIN), mock_context)["body"])["data"]
+        assert data["spotifyConnectedOwners"] == ["connected@example.com"]

@@ -12,6 +12,7 @@ PLAN.md WS6.
 
 from typing import Any
 
+from lambdas.common.dynamo_helpers import list_spotify_connected_users
 from lambdas.common.errors import handle_errors
 from lambdas.common.ingest_tokens import list_all_tokens
 from lambdas.common.logger import get_logger
@@ -34,10 +35,23 @@ def handler(event: dict, context: Any) -> dict:
         owner = t.get("ownerEmail") or "unknown"
         by_owner.setdefault(owner, []).append(t)
 
+    # Which token-owners are Spotify-connected in xomtracks -- i.e. the rolling
+    # cron can build their OWN playlists. An owner with a token but NO connection
+    # ingests shares but gets no own playlists, so the Extractor-status view
+    # flags it. One scan; matched by email (== ownerId under WS-AUTH). Best-effort:
+    # this enrichment must never break the (primary) token list.
+    try:
+        connected = {u.get("email") for u in list_spotify_connected_users() if u.get("email")}
+        spotify_connected_owners = sorted(owner for owner in by_owner if owner in connected)
+    except Exception as err:  # noqa: BLE001 -- secondary enrichment, degrade gracefully
+        log.warning(f"admin_tokens: spotify-connected enrichment failed: {err}")
+        spotify_connected_owners = []
+
     log.info(f"Admin listed {len(tokens)} ingest token(s) across {len(by_owner)} owner(s)")
 
     return success_response({
         "tokens": tokens,
         "byOwner": by_owner,
         "count": len(tokens),
+        "spotifyConnectedOwners": spotify_connected_owners,
     })
