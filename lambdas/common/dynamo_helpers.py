@@ -7,6 +7,7 @@ builds playlists through (self-contained per PLAN.md Option 3; NOT
 xomify's users table).
 """
 
+import os
 import time
 
 import boto3
@@ -27,6 +28,16 @@ _dynamodb = None
 # account's id unchanged; `spotifyUserId` is the explicit Phase-2 name.
 SPOTIFY_REFRESH_TOKEN_ATTR = "refreshToken"
 SPOTIFY_USER_ID_ATTR = "spotifyUserId"
+
+# The XOMIFY users table -- a SIBLING app in the same AWS account, keyed by the
+# SAME normalized email. The module header calls this module "NOT xomify's users
+# table"; we make ONE deliberate, read-only exception: a self-serve user already
+# granted Spotify at xomify sign-in (the app is unreachable otherwise), and
+# xomtracks reuses xomify's Spotify APP, so that refreshToken is valid here
+# as-is. Rather than force a second OAuth, we copy it onto the xomtracks-users
+# row so the rolling-playlist cron can build their OWN playlists. We read ONLY
+# `refreshToken`/`userId`. Empty when unset -> the whole sync is a no-op.
+XOMIFY_USERS_TABLE_NAME = os.environ.get("XOMIFY_USERS_TABLE_NAME", "")
 
 
 def _get_dynamodb():
@@ -154,6 +165,56 @@ def store_spotify_connection(email: str, owner_id: str, refresh_token: str, spot
     except Exception as err:
         log.error(f"Store spotify connection failed: {err}")
         raise DynamoDBError(message=str(err), function="store_spotify_connection", table=USERS_TABLE_NAME)
+
+
+def read_xomify_spotify_connection(email: str) -> dict | None:
+    """
+    Read {refreshToken, spotifyUserId} for `email` from the XOMIFY users table
+    (sibling app, same account, same email key). Read-only, and only those two
+    fields. Returns None when the table isn't configured, the row or token is
+    absent, or on ANY error -- fail closed, never blocks the caller.
+    """
+    if not XOMIFY_USERS_TABLE_NAME or not email:
+        return None
+    try:
+        res = _get_dynamodb().Table(XOMIFY_USERS_TABLE_NAME).get_item(Key={"email": email})
+        row = res.get("Item") or {}
+    except Exception as err:  # noqa: BLE001 -- best-effort cross-app read
+        log.warning(f"read_xomify_spotify_connection failed for {email}: {err}")
+        return None
+    token = row.get("refreshToken")
+    if not token:
+        return None
+    return {"refreshToken": token, "spotifyUserId": row.get("userId")}
+
+
+def ensure_spotify_connection_from_xomify(email: str) -> bool:
+    """
+    Best-effort: if `email` has NO xomtracks Spotify connection yet but DOES have
+    one in xomify (they signed in via Spotify to reach the app at all), copy that
+    refreshToken onto their xomtracks-users row -- so the rolling-playlist cron
+    (which scans xomtracks-users for refreshToken) can build their OWN playlists
+    on their account. No re-auth: xomtracks reuses xomify's Spotify app, so the
+    token is valid as-is. Returns True iff it synced. NEVER raises -- a sync
+    failure must not break whatever action triggered it (e.g. minting a token).
+    """
+    from lambdas.common.constants import USERS_TABLE_NAME
+
+    if not email:
+        return False
+    try:
+        res = _get_dynamodb().Table(USERS_TABLE_NAME).get_item(Key={"email": email})
+        if (res.get("Item") or {}).get(SPOTIFY_REFRESH_TOKEN_ATTR):
+            return False  # already connected in xomtracks -- nothing to do
+        conn = read_xomify_spotify_connection(email)
+        if not conn:
+            return False
+        store_spotify_connection(email, email, conn["refreshToken"], conn.get("spotifyUserId") or "")
+        log.info(f"Synced xomify Spotify connection into xomtracks-users for {email}")
+        return True
+    except Exception as err:  # noqa: BLE001 -- best-effort, never blocks the caller
+        log.warning(f"ensure_spotify_connection_from_xomify failed for {email}: {err}")
+        return False
 
 
 def list_spotify_connected_users() -> list[dict]:
