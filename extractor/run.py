@@ -21,10 +21,12 @@ next scan rather than skipped.
 import argparse
 import os
 import sys
+import time
 
 from extractor.chat_reader import fetch_new_messages, open_read_only_connection
 from extractor.contacts import build_resolver
 from extractor.ingest_client import push_share as default_push_share
+from extractor.ingest_client import report_run
 from extractor.logging_setup import get_logger
 from extractor.share_builder import build_shares_from_message
 from extractor.watermark import DEFAULT_STATE_PATH, load_watermark, save_watermark
@@ -129,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     # build_resolver never raises -- off-host it just resolves nothing.
     resolve_name = build_resolver()
 
+    started = time.monotonic()
     stats = run_once(
         args.db_path,
         args.state_path,
@@ -137,6 +140,24 @@ def main(argv: list[str] | None = None) -> int:
         immutable=args.immutable,
         resolve_name=resolve_name,
     )
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    # Best-effort run telemetry (backs the admin Extractor-status view). The run
+    # endpoint sits beside the ingest one; derive it so no extra config/env is
+    # needed. Never affects the scan's exit status.
+    run_url = args.ingest_url.replace("/shares/ingest", "/ingest/run")
+    if run_url != args.ingest_url:
+        report_run(
+            run_url,
+            args.bearer_key,
+            {
+                "scanned": stats.get("scanned", 0),
+                "ingested": stats.get("shares_pushed", 0),
+                "newWatermark": stats.get("new_watermark"),
+                "durationMs": duration_ms,
+            },
+        )
+
     return 1 if stats["failed"] else 0
 
 

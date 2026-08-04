@@ -289,6 +289,20 @@ class RevokeIngestTokenRequest(BaseModel):
         return None
 
 
+class IngestRunRequest(BaseModel):
+    """
+    POST /ingest/run -- the compact per-scan summary the extractor sends after
+    each cycle (best-effort telemetry, ingest-token authed). All counts are
+    optional and non-negative; a run that scanned nothing still reports so
+    "last run" reflects that the extractor IS alive, not just the last ingest.
+    """
+
+    scanned: int = Field(default=0, ge=0)
+    ingested: int = Field(default=0, ge=0)
+    newWatermark: int | None = Field(default=None, ge=0)
+    durationMs: int | None = Field(default=None, ge=0)
+
+
 class AdminRevokeTokenRequest(BaseModel):
     """
     POST /admin/revoke-token -- the admin (Dom) revokes ANY user's ingest token

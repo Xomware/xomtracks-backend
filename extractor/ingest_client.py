@@ -48,3 +48,30 @@ def push_share(
         f"Ingest push failed ({response.status_code}) for guid={share.get('messageGuid')}: {response.json()}"
     )
     return False
+
+
+def report_run(
+    run_url: str,
+    bearer_key: str,
+    summary: dict,
+    http_post=requests.post,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> bool:
+    """
+    POST a compact per-scan summary to /ingest/run (telemetry only). Body:
+    {scanned, ingested, newWatermark?, durationMs?}. STRICTLY best-effort --
+    returns False (never raises) on any error; a telemetry miss must never
+    affect the scan or its watermark. No-ops when `run_url` is falsy.
+    """
+    if not run_url:
+        return False
+    headers = {"Authorization": f"Bearer {bearer_key}", "Content-Type": "application/json"}
+    try:
+        response = http_post(run_url, json=summary, headers=headers, timeout=timeout)
+    except Exception as err:  # noqa: BLE001 -- telemetry is never fatal
+        log.warning(f"Run report failed (transport error): {err}")
+        return False
+    if 200 <= response.status_code < 300:
+        return True
+    log.warning(f"Run report failed ({response.status_code})")
+    return False

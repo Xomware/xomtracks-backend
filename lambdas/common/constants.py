@@ -173,6 +173,13 @@ REQUEST_LOG_TTL_DAYS = int(os.environ.get('REQUEST_LOG_TTL_DAYS', '21'))
 # docs/features/xomtracks-selfserve/PLAN.md Phase 3.
 INGEST_TOKENS_TABLE_NAME = os.environ.get('INGEST_TOKENS_TABLE_NAME', '')
 
+# Per-scan run summaries the extractor POSTs after each cycle (compact
+# telemetry: scanned/ingested counts + duration). One row per (owner, runAt);
+# TTL'd so history self-prunes. Backs GET /admin/runs. NO-OP when the table env
+# is unset (unconfigured/local) -- recording is always best-effort.
+INGEST_RUNS_TABLE_NAME = os.environ.get('INGEST_RUNS_TABLE_NAME', '')
+INGEST_RUNS_TTL_DAYS = int(os.environ.get('INGEST_RUNS_TTL_DAYS', '90'))
+
 # ============================================
 # Matching
 # ============================================
