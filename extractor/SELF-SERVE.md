@@ -17,11 +17,13 @@ reuses the exact same extractor that runs on Dom's machine.
 
 - **never writes to `chat.db`**,
 - **never sends an iMessage**,
-- **never uploads message text, contacts, attachments, or anything** other than
-  the music links themselves.
+- **never uploads message text, attachments, or your address book.**
 
-The only data that ever leaves your Mac is the matched music **URLs** (plus the
-minimum metadata to attribute a share: who shared it, when, and which chat). The
+The only data that ever leaves your Mac is the matched music **URLs** plus the
+minimum metadata to attribute a share: the sharer's **name** (resolved locally
+from your Contacts — see below), when it was shared, and which chat. Your
+address book as a whole is never uploaded — only the name of someone who
+actually shared a link. The
 allowlist of what counts as a "music link" lives in
 [`url_extractor.py`](./url_extractor.py) — that regex list *is* the guarantee.
 If a URL doesn't match it, it never leaves your machine.
@@ -230,8 +232,8 @@ bash install.sh
 ## Privacy, one more time
 
 - Read-only on `chat.db`. Never writes. Never sends a message.
-- Only **music links** leave your Mac — never message text, contacts, or
-  attachments.
+- What leaves your Mac: **music links** + the sharer's name (resolved locally
+  from your Contacts) — never message text, attachments, or your address book.
 - Your ingest token lives only in your login Keychain.
 - The extractor is open source in this repo — the URL allowlist in
   [`url_extractor.py`](./url_extractor.py) is the auditable proof of exactly what
