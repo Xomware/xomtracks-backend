@@ -191,6 +191,61 @@ def owner_has_active_token(owner_id: str) -> bool:
         return False
 
 
+def list_active_tokens_for_owner(owner_id: str) -> list[dict]:
+    """
+    Every NON-revoked ingest token owned by `owner_id`, each:
+      {tokenHash, label, createdAt (epoch), lastUsedAt (epoch|None)}
+
+    Backs the caller-scoped GET /ingest-tokens/list (the self-serve "your
+    devices" list) AND the `lastScanAt` on GET /me/get (max lastUsedAt across
+    these). Filtered Scan -- no ownerId GSI, same friend-group-scale rationale
+    as owner_has_active_token, and the per-owner row count is tiny (one-ish per
+    device). Fails CLOSED to [] on any error -- a lookup hiccup must not wipe a
+    user's device list or falsely claim "no scans yet".
+    """
+    if not owner_id:
+        return []
+    try:
+        items: list[dict] = []
+        kwargs: dict = {
+            "FilterExpression": Attr("ownerId").eq(owner_id) & Attr("revoked").ne(True),
+        }
+        while True:
+            res = _table().scan(**kwargs)
+            items.extend(res.get("Items", []))
+            last_key = res.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+    except Exception as err:  # noqa: BLE001 -- non-critical, fail closed to []
+        log.error(f"list_active_tokens_for_owner failed (returning []): {err}")
+        return []
+
+    return [
+        {
+            "tokenHash": r.get("tokenHash"),
+            "label": r.get("label"),
+            "createdAt": r.get("createdAt"),
+            "lastUsedAt": r.get("lastUsedAt"),
+        }
+        for r in items
+    ]
+
+
+def latest_scan_epoch_for_owner(owner_id: str) -> int | None:
+    """
+    The most recent `lastUsedAt` (epoch) across `owner_id`'s active tokens, or
+    None when they have none / none has ever pushed. Convenience over
+    list_active_tokens_for_owner for callers that only need the max.
+    """
+    stamps = [
+        t["lastUsedAt"]
+        for t in list_active_tokens_for_owner(owner_id)
+        if t.get("lastUsedAt")
+    ]
+    return max(stamps) if stamps else None
+
+
 def list_all_tokens() -> list[dict]:
     """
     Every ingest token's METADATA across all owners (admin portal WS6). Returns

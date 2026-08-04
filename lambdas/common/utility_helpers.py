@@ -467,3 +467,16 @@ def get_timestamp() -> str:
 def get_iso_timestamp() -> str:
     """Get current UTC timestamp in ISO 8601 format (with Z suffix)."""
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def epoch_to_iso(epoch: int | float | None) -> str | None:
+    """Convert a stored epoch-seconds timestamp to a Z-suffixed ISO 8601 string,
+    matching get_iso_timestamp's shape, or None when the epoch is missing or
+    unparseable. Lets stored epoch fields (e.g. ingest-token lastUsedAt) surface
+    to the frontend in the one timestamp format it already renders."""
+    if not epoch:
+        return None
+    try:
+        return datetime.fromtimestamp(int(epoch), tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+    except (ValueError, TypeError, OSError, OverflowError):
+        return None

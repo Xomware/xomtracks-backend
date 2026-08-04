@@ -225,5 +225,38 @@ class TestMeGetAdminAndOwnIngest:
         assert data["ownIngest"] is True
 
 
+class TestMeGetLastScanAt:
+    """The onboarding "Connected" panel's "last scan" readout: max lastUsedAt
+    across the caller's active tokens, ISO 8601, null until the first push."""
+
+    def test_last_scan_at_null_when_no_token(self, tables, authorized_event, mock_context):
+        from lambdas.me_get.handler import handler
+
+        data = json.loads(handler(authorized_event(email="nobody@example.com"), mock_context)["body"])["data"]
+        assert data["lastScanAt"] is None
+
+    def test_last_scan_at_null_when_token_never_used(self, tables, authorized_event, mock_context):
+        from lambdas.common import ingest_tokens
+        from lambdas.me_get.handler import handler
+
+        ingest_tokens.mint_token("fresh@example.com", label="new mac")
+
+        data = json.loads(handler(authorized_event(email="fresh@example.com"), mock_context)["body"])["data"]
+        assert data["ownIngest"] is True
+        assert data["lastScanAt"] is None
+
+    def test_last_scan_at_iso_after_a_push(self, tables, authorized_event, mock_context):
+        from lambdas.common import ingest_tokens
+        from lambdas.me_get.handler import handler
+
+        minted = ingest_tokens.mint_token("scanner@example.com", label="mbp")
+        # A push resolves the token, stamping lastUsedAt.
+        ingest_tokens.resolve_owner(minted["token"])
+
+        data = json.loads(handler(authorized_event(email="scanner@example.com"), mock_context)["body"])["data"]
+        assert data["lastScanAt"] is not None
+        assert data["lastScanAt"].endswith("Z")
+
+
 def resp_str(data) -> str:
     return json.dumps(data)

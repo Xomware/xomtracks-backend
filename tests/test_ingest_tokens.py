@@ -126,3 +126,50 @@ class TestRevoke:
 
         with pytest.raises(NotFoundError):
             ingest_tokens.revoke_token(OWNER_A, "deadbeef")
+
+
+class TestListActiveTokensForOwner:
+    def test_returns_only_owners_non_revoked_tokens(self, tokens_table):
+        from lambdas.common import ingest_tokens
+
+        ingest_tokens.mint_token(OWNER_A, label="mbp")
+        gone = ingest_tokens.mint_token(OWNER_A, label="old")
+        ingest_tokens.revoke_token(OWNER_A, gone["tokenHash"])
+        ingest_tokens.mint_token(OWNER_B, label="theirs")
+
+        rows = ingest_tokens.list_active_tokens_for_owner(OWNER_A)
+        assert {r["label"] for r in rows} == {"mbp"}
+        assert all("lastUsedAt" in r and "createdAt" in r for r in rows)
+
+    def test_empty_for_owner_with_no_tokens(self, tokens_table):
+        from lambdas.common import ingest_tokens
+
+        assert ingest_tokens.list_active_tokens_for_owner(OWNER_A) == []
+
+    def test_empty_owner_id_returns_empty(self, tokens_table):
+        from lambdas.common import ingest_tokens
+
+        assert ingest_tokens.list_active_tokens_for_owner("") == []
+
+
+class TestLatestScanEpochForOwner:
+    def test_none_when_never_used(self, tokens_table):
+        from lambdas.common import ingest_tokens
+
+        ingest_tokens.mint_token(OWNER_A, label="new")
+        assert ingest_tokens.latest_scan_epoch_for_owner(OWNER_A) is None
+
+    def test_returns_max_last_used_across_tokens(self, tokens_table):
+        from lambdas.common import ingest_tokens
+
+        t1 = ingest_tokens.mint_token(OWNER_A, label="one")
+        t2 = ingest_tokens.mint_token(OWNER_A, label="two")
+        # Resolving stamps lastUsedAt on each; t2 stamped last -> its epoch is >=.
+        ingest_tokens.resolve_owner(t1["token"])
+        ingest_tokens.resolve_owner(t2["token"])
+
+        latest = ingest_tokens.latest_scan_epoch_for_owner(OWNER_A)
+        # DynamoDB returns numbers as Decimal -- what matters is it's a real,
+        # positive epoch that epoch_to_iso can consume.
+        assert latest is not None
+        assert int(latest) > 0
