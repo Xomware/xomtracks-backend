@@ -61,3 +61,39 @@ class TestPushShare:
 
         ok = push_share({}, "https://api.example.com/shares/ingest", "key", http_post=fake_post)
         assert ok is True
+
+
+class TestReportRun:
+    def test_posts_summary_with_bearer(self):
+        from extractor.ingest_client import report_run
+
+        calls = []
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            calls.append((url, json, headers))
+            return FakeResponse(200, {"data": {"recorded": True}})
+
+        ok = report_run(
+            "https://api.example.com/ingest/run",
+            "secret-key",
+            {"scanned": 10, "ingested": 2, "newWatermark": 99, "durationMs": 500},
+            http_post=fake_post,
+        )
+        assert ok is True
+        url, body, headers = calls[0]
+        assert url == "https://api.example.com/ingest/run"
+        assert body["scanned"] == 10 and body["ingested"] == 2
+        assert headers["Authorization"] == "Bearer secret-key"
+
+    def test_noop_on_empty_url(self):
+        from extractor.ingest_client import report_run
+
+        assert report_run("", "k", {"scanned": 1}) is False
+
+    def test_transport_error_returns_false_never_raises(self):
+        from extractor.ingest_client import report_run
+
+        def boom(url, json=None, headers=None, timeout=None):
+            raise ConnectionError("network down")
+
+        assert report_run("https://x/ingest/run", "k", {"scanned": 1}, http_post=boom) is False
