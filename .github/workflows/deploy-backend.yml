@@ -54,6 +54,9 @@ on:
         default: true
 
 
+env:
+  AWS_REGION: us-east-1
+
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
