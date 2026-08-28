@@ -53,8 +53,6 @@ on:
         type: boolean
         default: true
 
-env:
-  AWS_REGION: "us-east-1"
 
 jobs:
   detect-changes:
@@ -169,12 +167,21 @@ jobs:
           fi
 
   deploy-layer:
+    permissions:
+      id-token: write # mint the OIDC token traded for the deploy role
+      contents: read
     needs: [detect-changes, test-lambdas]
     if: always() && needs.detect-changes.outputs.common_changed == 'true' && (needs.test-lambdas.result == 'success' || needs.test-lambdas.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       layer_arn: ${{ steps.deploy-layer.outputs.layer_arn }}
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -192,9 +199,6 @@ jobs:
 
       - name: Deploy layer
         id: deploy-layer
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           LAYER_OUTPUT=$(aws lambda publish-layer-version \
             --layer-name xomtracks-shared-packages \
@@ -208,6 +212,9 @@ jobs:
           echo "Published layer: $LAYER_ARN"
 
   update-all-lambdas-layer:
+    permissions:
+      id-token: write # mint the OIDC token traded for the deploy role
+      contents: read
     needs: [detect-changes, deploy-layer]
     if: always() && needs.detect-changes.outputs.common_changed == 'true' && needs.deploy-layer.result == 'success'
     runs-on: ubuntu-latest
@@ -216,10 +223,13 @@ jobs:
         lambda: ${{ fromJson(needs.detect-changes.outputs.all_lambdas) }}
       fail-fast: false
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Update lambda layer configuration
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           FOLDER="${{ matrix.lambda }}"
           # Cron Lambdas are named `xomtracks-cron-<hyphenated-name>` in
@@ -253,6 +263,9 @@ jobs:
             --region $AWS_REGION || echo "Function $FUNCTION_NAME not found, skipping..."
 
   deploy-changed-lambdas:
+    permissions:
+      id-token: write # mint the OIDC token traded for the deploy role
+      contents: read
     # Explicitly sequenced AFTER update-all-lambdas-layer (not just
     # deploy-layer) -- discovered live, not theoretical: running both
     # concurrently against the same function (this job's
@@ -271,6 +284,12 @@ jobs:
         lambda: ${{ fromJson(needs.detect-changes.outputs.changed_lambdas) }}
       fail-fast: false
     steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
       - name: Checkout code
         uses: actions/checkout@v6
 
@@ -285,9 +304,6 @@ jobs:
           zip -r ../../${{ matrix.lambda }}.zip *
 
       - name: Deploy lambda code
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           FOLDER="${{ matrix.lambda }}"
           # Cron Lambdas are named `xomtracks-cron-<hyphenated-name>` in
